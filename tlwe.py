@@ -73,7 +73,7 @@ class TLWE(Base):
                 f = []
                 for j in range(N):
                     f.append(r[i][j][p])
-                u[i].append(f)
+                u[i].append(np.poly1d(f))
         return u
     
     def __add__(self, other: 'TLWE'):

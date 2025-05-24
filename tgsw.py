@@ -7,13 +7,24 @@ class TGSW(tlwe.Base):
     def __init__(self, k: int, N: int, l: int, values: list[tlwe.TLWE]):
         super().__init__(k, N)
         self.params['l'] = l
-        self.values = values
+        self.values = values # (k+1)*l, k+1
     
     def phase(self, s: NDArray[np.int64]):
         msg = []
         for i in range((self.params['k']+1)*self.params['l']):
             msg.append(self.values[i].phase(s))
         return msg
+    
+    def dot(self, other: tlwe.TLWE):
+        u = other.decompose(2, self.params['l']) # k+1, l 
+        r = []
+        for i in range((self.params['k']+1)):
+            temp = []
+            for j in range(self.params['l']):
+                a = self.values[i].asPoly()
+                temp.append(np.polymul(u[i][j], a[i * j]))
+        
+        return TLWE(self.params['k'], self.params['N'], a)
 
 class TGSW_Factory(tlwe.Base):
     def __init__(self, k: int, N: int, alpha: int = 0.005):
@@ -55,15 +66,16 @@ class TGSW_Factory(tlwe.Base):
                 sum = np.polyadd(tlwe_s[j][i], H_m[j][i])
                 temp.append(sum)
             tgsw_s.append(self.tlwe_factory.fromPoly(temp))
-            print("phase: ", tgsw_s[j].phase(s))
-            #
-        return tgsw_s
+            
+        print(H_m)
+        return TGSW(self.params['k'], self.params['N'], l, tgsw_s)
 
 def example():
     factory_TGSW: TGSW_Factory = TGSW_Factory(1, 2)
     key = factory_TGSW.key_gen()
-    H = factory_TGSW.fresh(4, 2, 0, 0.4)
-    print("sample1: ",H)
+    sample = factory_TGSW.fresh(4, 2, key, 0.4)
+    print("sample1: ", sample)
+    print("phase: ", sample.phase(key))
 
 if __name__ == '__main__':
     example()

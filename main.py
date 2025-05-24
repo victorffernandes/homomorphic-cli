@@ -118,12 +118,13 @@ def tgsw(m, l, H):
     
     for i in range(l_):
         tlwe_s.append(tlwe(secret))
-        tgsw_s.append(sum_tlwe(tlwe_s[i], H_m[i]))
-        #tgsw_s.append(tlwe_s[i])
+        sum = sum_tlwe(tlwe_s[:-1], H_m[i])
+        #tgsw_s.append(sum_tlwe(tlwe_s[i], H_m[i]))
+        tgsw_s.append(tlwe_s[i])
 
-    print(tlwe_s)
-    print(H_m)
-    print(tgsw_s)
+    # print(tlwe_s)
+    # print(H_m)
+    # print(tgsw_s)
     return tgsw_s
 
 
@@ -133,12 +134,12 @@ def phase_tgsw(tgsw_s, secret, l):
          msg.append(phase_s(tgsw_s[i], secret))
     return msg
 
-# 35094913 35094911 35094700 35094900 36021438 
-a = tlwe(secret)
-print("tlwe :", phase_s(a, secret))
+# # 35094913 35094911 35094700 35094900 36021438 
+# a = tlwe(secret)
+# # print("tlwe :", phase_s(a, secret))
 
 l = 4
-print(H(l, 2))
+# print(H(l, 2))
 s = tgsw(0, l, H(l, 2))
-print(phase_tgsw(s, secret, l))
-#dec = decompose(a, 2, l)
+# print(phase_tgsw(s, secret, l))
+# #dec = decompose(a, 2, l)
