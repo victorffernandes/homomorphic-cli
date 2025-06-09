@@ -5,6 +5,7 @@ from numpy.polynomial import Polynomial
 # --- Parâmetros do Esquema CKKS (Simplificado) ---
 N = 16
 Q = 103427
+Q_CHAIN = [1000000007, 1000000037, 1000000063, 1000000073]
 DELTA = 65536 # Mantendo o DELTA alto que mostrou melhora no DC
 SIGMA = 3.2
 POLY_MOD_RING_COEFFS = [0] * N + [1]
@@ -133,6 +134,15 @@ def decrypt(ciphertext_ct, secret_key_sk_s, ring_poly_mod, q_mod):
     corrected_coeffs = np.where(coeffs > q_mod // 2, coeffs - q_mod, coeffs)
     return Polynomial(corrected_coeffs)
 
+def add_homomorphic(ct1, ct2):
+    ct10, ct11 = ct1
+    ct20, ct21 = ct2
+
+    return ct10 + ct20, ct11 + ct21
+
+def multiply_homomorphic(ct1, ct2):
+    
+
 # --- Demonstração de Uso ---
 if __name__ == "__main__":
     print(f"Parâmetros: N={N}, Q={Q}, DELTA={DELTA}, SIGMA={SIGMA}")
@@ -157,12 +167,14 @@ if __name__ == "__main__":
     print("-" * 40)
 
     # 3. Criptografar
-    ct_c0, ct_c1 = encrypt(encoded_message_poly, pk, N, POLY_MOD_RING, Q, SIGMA)
-    print(f"Mensagem Criptografada (ct = (c0,c1)) {ct_c0}, {ct_c1}.")
+    ct = encrypt(encoded_message_poly, pk, N, POLY_MOD_RING, Q, SIGMA)
+    print(f"Mensagem Criptografada (ct = (c0,c1)) {ct[0]}, {ct[1]}.")
     print("-" * 40)
 
+    ct = add_homomorphic(ct, ct)
+
     # 4. Descriptografar
-    decrypted_scaled_poly = decrypt((ct_c0, ct_c1), sk, POLY_MOD_RING, Q)
+    decrypted_scaled_poly = decrypt(ct, sk, POLY_MOD_RING, Q)
     print(f"Polinômio Descriptografado Escalonado (m') (coefs. primeiros 8): \n{decrypted_scaled_poly.coef[:8]}")
     print("-" * 40)
 
@@ -172,7 +184,7 @@ if __name__ == "__main__":
     print("-" * 40)
 
     # Comparar original e decodificado
-    error = plaintext_real_vector_half - decoded_approx_vector_half
+    error = plaintext_real_vector_half * 2 - decoded_approx_vector_half
     print(f"Erro (z - z') ({num_plaintext_elements} elementos): \n{np.round(error, 5)}")
     print(f"Erro Máximo Absoluto: {np.max(np.abs(error)):.5f}")
     print(f"Erro Médio Quadrático: {np.sqrt(np.mean(error**2)):.5f}")
