@@ -4,15 +4,15 @@ from numpy.polynomial import Polynomial
 
 # --- Parâmetros do Esquema CKKS (Simplificado) ---
 N = 16
+Q_CHAIN = [103427, 1000000037, 1000000063, 1000000073]
 Q = 103427
-Q_CHAIN = [1000000007, 1000000037, 1000000063, 1000000073]
-DELTA = 65536 # Mantendo o DELTA alto que mostrou melhora no DC
+DELTA = 2**12 # Mantendo o DELTA alto que mostrou melhora no DC
 SIGMA = 3.2
 POLY_MOD_RING_COEFFS = [0] * N + [1]
 POLY_MOD_RING_COEFFS[0] = 1
 POLY_MOD_RING = Polynomial(POLY_MOD_RING_COEFFS)
 
-# --- Funções Auxiliares para Polinômios (sem alterações) ---
+# --- Funções Auxiliares para Polinômios---
 def poly_coeffs_mod_q(p_numpy, q_coeff):
     coeffs = np.mod(np.round(p_numpy.coef).astype(np.int64), q_coeff)
     return Polynomial(coeffs)
@@ -29,7 +29,7 @@ def generate_uniform_random_poly(degree_n, q_bound):
     coeffs = np.random.randint(0, q_bound, size=degree_n)
     return Polynomial(coeffs)
 
-# --- Geração de Chaves (Key Generation) (sem alterações) ---
+# --- Geração de Chaves (Key Generation)---
 def keygen(n_degree, ring_poly_mod, q_mod, sigma_err):
     sk_s = generate_gaussian_poly(n_degree, sigma_err)
     pk_a = generate_uniform_random_poly(n_degree, q_mod)
@@ -37,6 +37,20 @@ def keygen(n_degree, ring_poly_mod, q_mod, sigma_err):
     neg_a_s = -pk_a * sk_s
     pk_b = poly_ring_mod(neg_a_s + e_err, ring_poly_mod, q_mod)
     return sk_s, (pk_b, pk_a)
+
+def relin_keygen(sk, n, q, p, sigma):
+    """Gera a chave de relinearização (evk), uma criptografia de P*s^2."""
+    a_prime = generate_uniform_random_poly(n, q * p) # Gerado em um módulo maior
+    e_prime = generate_uniform_random_poly(n, sigma)
+    sk_squared = sk * sk
+    
+    # evk é gerado com P e depois reduzido
+    evk0 = -a_prime * sk + e_prime + p * sk_squared
+    evk1 = a_prime
+    
+    # A chave é um par de polinômios em R_{q*p}
+    return (evk0, evk1)
+
 
 # --- NOVA Codificação Correta para Dados Reais (N/2 entradas) ---
 def ckks_encode_real(real_vector_n_half_elements, delta_scale, n_poly_coeffs):
@@ -113,7 +127,7 @@ def ckks_decode_real(message_poly_m_prime, delta_scale, n_poly_coeffs):
     
     return decoded_real_values
 
-# --- Criptografia (Encryption) (sem alterações) ---
+# --- Criptografia (Encryption)---
 def encrypt(message_poly_m, public_key_pk, n_degree, ring_poly_mod, q_mod, sigma_err):
     pk_b, pk_a = public_key_pk
     u_rand_poly = generate_gaussian_poly(n_degree, sigma_err)
@@ -125,7 +139,7 @@ def encrypt(message_poly_m, public_key_pk, n_degree, ring_poly_mod, q_mod, sigma
     c1 = poly_ring_mod(tmp_pka_u + e2_err_poly, ring_poly_mod, q_mod)
     return c0, c1
 
-# --- Descriptografia (Decryption) (sem alterações) ---
+# --- Descriptografia (Decryption)---
 def decrypt(ciphertext_ct, secret_key_sk_s, ring_poly_mod, q_mod):
     c0, c1 = ciphertext_ct
     c1_s = c1 * secret_key_sk_s
@@ -140,17 +154,70 @@ def add_homomorphic(ct1, ct2):
 
     return ct10 + ct20, ct11 + ct21
 
-def multiply_homomorphic(ct1, ct2):
+def Multevk(c1, c2, evk, P, q, ring_poly):
+    """
+    Calcula o produto homomórfico de c1 e c2 usando a chave de avaliação evk.
+    Implementa a fórmula: cmult = (d0, d1) + floor(P^-1 * d2 * evk)
+    """
+    # --- Passo 1: Multiplicação Bruta ---
+    # c1 = (b1, a1), c2 = (b2, a2)
+    b1, a1 = c1
+    b2, a2 = c2
     
+    # Calcula (d0, d1, d2) = (b1b2, a1b2 + a2b1, a1a2) (mod q)
+    d0 = poly_ring_mod(b1 * b2, ring_poly, q)
+    d1 = poly_ring_mod(a1 * b2 + a2 * b1, ring_poly, q)
+    d2 = poly_ring_mod(a1 * a2, ring_poly, q)
+
+    # --- Passo 2: Relinearização com a evk ---
+    evk0, evk1 = evk
+    
+    # Calcula (d2 * evk) sobre os inteiros (apenas redução pelo anel de polinômios)
+    # A lógica de generate_relinkey agora gera a evk em um módulo maior
+    d2_evk0_full =  poly_ring_mod(d2 * evk0, ring_poly, q)
+    d2_evk1_full = poly_ring_mod(d2 * evk1 , ring_poly, q)
+
+    # Calcula floor(P^-1 * ...) usando aritmética inteira robusta
+    corr0_coeffs = d2_evk0_full / P
+    corr1_coeffs = d2_evk1_full / P
+    
+    corr0 = Polynomial(corr0_coeffs.coef.astype(np.int64))
+    corr1 = Polynomial(corr1_coeffs.coef.astype(np.int64))
+
+    # Adiciona o termo de correção a (d0, d1) para obter o texto cifrado final
+    cmult_b = poly_ring_mod(d0 + corr0_coeffs, ring_poly, q)
+    cmult_a = poly_ring_mod(d1 + corr1_coeffs, ring_poly, q)
+    
+    return (cmult_b, cmult_a)
+
+
+def rescale(ct, q, delta):
+    """Rescala um texto cifrado, dividindo-o por delta e mudando o módulo."""
+    c0, c1 = ct
+    
+    # Centraliza os coeficientes antes da divisão
+    q_ = q / delta
+    c0_centered = c0 * (q / q_)
+    c1_centered = c1 * (q / q_)
+
+    # # A "divisão" robusta é feita com arredondamento
+    # c0_rescaled = np.round(c0_centered)
+    # c1_rescaled = np.round(c1_centered)
+    
+    # Retorna o texto cifrado rescalado (agora em um anel com módulo q/delta)
+    return (poly_ring_mod(Polynomial(c0_centered.coef.astype(np.int64)), POLY_MOD_RING, q_),
+            poly_ring_mod(Polynomial(c1_centered.coef.astype(np.int64)), POLY_MOD_RING, q_))
 
 # --- Demonstração de Uso ---
 if __name__ == "__main__":
     print(f"Parâmetros: N={N}, Q={Q}, DELTA={DELTA}, SIGMA={SIGMA}")
     print(f"Anel R_Q = Z_{Q}[X]/(X^{N}+1)")
     print("-" * 40)
+    P = 2**16
 
     # 1. Geração de Chaves
     sk, pk = keygen(N, POLY_MOD_RING, Q, SIGMA)
+    evk = relin_keygen(sk, N, Q, P, SIGMA)
     print("Chave Secreta (sk) gerada.")
     print("Chave Pública (pk) gerada.")
     print("-" * 40)
@@ -171,7 +238,9 @@ if __name__ == "__main__":
     print(f"Mensagem Criptografada (ct = (c0,c1)) {ct[0]}, {ct[1]}.")
     print("-" * 40)
 
-    ct = add_homomorphic(ct, ct)
+    ct = Multevk(ct, ct, evk, P, Q, POLY_MOD_RING)
+    ct = rescale(ct, Q, DELTA)
+    Q = Q/DELTA
 
     # 4. Descriptografar
     decrypted_scaled_poly = decrypt(ct, sk, POLY_MOD_RING, Q)
