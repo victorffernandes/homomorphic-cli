@@ -190,7 +190,6 @@ def Multevk(c1, c2, evk, P, q, ring_poly):
     
     return (cmult_b, cmult_a)
 
-
 def rescale(ct, q, delta):
     """Rescala um texto cifrado, dividindo-o por delta e mudando o módulo."""
     c0, c1 = ct
