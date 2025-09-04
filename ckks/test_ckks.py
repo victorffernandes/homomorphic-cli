@@ -1,3 +1,4 @@
+from ckks_main import ckks_encode_real, ckks_decode_real, DELTA, N, Q_CHAIN
 import pytest
 import numpy as np
 from numpy.polynomial import Polynomial
@@ -6,8 +7,6 @@ import os
 
 # Adiciona o diretório atual ao path para importar main.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from ckks_main import ckks_encode_real, ckks_decode_real, DELTA, N, Q_CHAIN
 
 
 class TestCKKSExample:
