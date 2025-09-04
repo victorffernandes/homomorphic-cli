@@ -33,7 +33,7 @@ class TestCKKSExample:
         assert isinstance(decoded_vector, np.ndarray)
         assert len(decoded_vector) > 0
 
-        print(f"✓ Teste passou: processo de encode/decode executado com sucesso")
+        print("✓ Teste passou: processo de encode/decode executado com sucesso")
         print(f"   Original: {test_vector}")
         print(f"   Resultado decode: {decoded_vector}")
         print(f"   Polinômio tem {len(encoded_poly.coef)} coeficientes")
