@@ -145,6 +145,7 @@ ehthumbs.db
 Thumbs.db
 
 # Project specific
+# Old individual virtual environments (now unified in root)
 ckks/env/*
 ckks/venv/
 tfhe/env/*

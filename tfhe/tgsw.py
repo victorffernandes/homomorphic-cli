@@ -3,72 +3,75 @@ from tlwe import TLWE_Factory
 import numpy as np
 from numpy.typing import NDArray
 
+
 class TGSW(tlwe.Base):
     def __init__(self, k: int, N: int, l: int, values: list[tlwe.TLWE]):
         super().__init__(k, N)
-        self.params['l'] = l
-        self.values = values # (k+1)*l, k+1
-    
+        self.params["l"] = l
+        self.values = values  # (k+1)*l, k+1
+
     def phase(self, s: NDArray[np.int64]):
         msg = []
-        for i in range((self.params['k']+1)*self.params['l']):
+        for i in range((self.params["k"] + 1) * self.params["l"]):
             msg.append(self.values[i].phase(s))
         return msg
-    
+
     def dot(self, other: tlwe.TLWE):
-        u = other.decompose(2, self.params['l']) # k+1, l 
+        u = other.decompose(2, self.params["l"])  # k+1, l
         r = []
-        for i in range((self.params['k']+1)):
+        for i in range((self.params["k"] + 1)):
             temp = []
-            for j in range(self.params['l']):
+            for j in range(self.params["l"]):
                 a = self.values[i].asPoly()
                 temp.append(np.polymul(u[i][j], a[i * j]))
-        
-        return TLWE(self.params['k'], self.params['N'], a)
+
+        return TLWE(self.params["k"], self.params["N"], a)
+
 
 class TGSW_Factory(tlwe.Base):
     def __init__(self, k: int, N: int, alpha: int = 0.005):
         super().__init__(k, N)
         self.tlwe_factory = TLWE_Factory(k, N, alpha)
-    
+
     def key_gen(self) -> NDArray[np.int64]:
-        return np.random.randint(2, size=(self.params['N']))
-    
+        return np.random.randint(2, size=(self.params["N"]))
+
     def gen_H(self, l, bg):
-        l_ = (self.params['k']+1)*l
-        h = np.zeros(shape=(l_,self.params['k']+1), dtype=np.poly1d)
-        for i in range(self.params['k']+1):
+        l_ = (self.params["k"] + 1) * l
+        h = np.zeros(shape=(l_, self.params["k"] + 1), dtype=np.poly1d)
+        for i in range(self.params["k"] + 1):
             for j in range(l):
-                h[i*l + j][i] = 1 / bg**j
-        
+                h[i * l + j][i] = 1 / bg**j
+
         return list(map(lambda x: list(map(lambda y: np.poly1d(y), x)), h))
-    
+
     def fresh(self, l, bg, s, m):
-        l_ = (self.params['k']+1)*l
+        l_ = (self.params["k"] + 1) * l
         message = np.poly1d(m)
         H = self.gen_H(l, bg)
 
         tgsw_s = []
-        tlwe_s = [] # (k+1)*l, k+1
-        
-        H_m = [] # (k+1)*l, k+1
-        
+        tlwe_s = []  # (k+1)*l, k+1
+
+        H_m = []  # (k+1)*l, k+1
+
         for j in range(l_):
             temp = []
-            for i in range(self.params['k']+1):
+            for i in range(self.params["k"] + 1):
                 temp.append(np.polymul(H[j][i], message))
             H_m.append(temp)
 
         for j in range(l_):
             tlwe_s.append(self.tlwe_factory.fresh(s).asPoly())
             temp = []
-            for i in range(self.params['k']+1):
+            for i in range(self.params["k"] + 1):
                 sum = np.polyadd(tlwe_s[j][i], H_m[j][i])
                 temp.append(sum)
             tgsw_s.append(self.tlwe_factory.fromPoly(temp))
-            
+
         print(H_m)
-        return TGSW(self.params['k'], self.params['N'], l, tgsw_s)
+        return TGSW(self.params["k"], self.params["N"], l, tgsw_s)
+
 
 def example():
     factory_TGSW: TGSW_Factory = TGSW_Factory(1, 2)
@@ -77,5 +80,6 @@ def example():
     print("sample1: ", sample)
     print("phase: ", sample.phase(key))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     example()

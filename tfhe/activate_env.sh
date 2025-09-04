@@ -1,16 +1,16 @@
 #!/bin/bash
-# Script para ativar o virtual environment da pasta tfhe
+# Script para ativar o virtual environment unificado (pasta TFHE)
 # Execute com: source activate_env.sh
 
-echo "Ativando virtual environment do TFHE..."
+echo "Ativando virtual environment unificado do projeto LWE..."
+cd ..
 source venv/bin/activate
-echo "Virtual environment ativado!"
+cd tfhe
+echo "Virtual environment ativado! (Você está na pasta tfhe)"
 echo "Python: $(which python)"
-echo "Pip: $(which pip)"
 echo ""
-echo "Para executar os testes, use:"
+echo "Para executar os testes TFHE:"
 echo "  pytest test_main.py -v"
-echo "  pytest test_main.py -v --cov=main"
 echo ""
 echo "Para executar o programa principal:"
 echo "  python main.py"

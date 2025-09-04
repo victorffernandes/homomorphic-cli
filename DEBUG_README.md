@@ -8,12 +8,12 @@ lwe/
 │   ├── launch.json       # Configurações de debug
 │   ├── settings.json     # Configurações do workspace
 │   └── tasks.json        # Tasks do VS Code
+├── venv/                 # Virtual environment unificado
+├── requirements.txt      # Dependências unificadas
 ├── ckks/
-│   ├── venv/            # Virtual environment do CKKS
 │   ├── main.py          # Implementação CKKS
 │   └── test_main.py     # Testes CKKS
 └── tfhe/
-    ├── venv/            # Virtual environment do TFHE
     ├── main.py          # Implementação TFHE
     └── test_main.py     # Testes TFHE
 ```
