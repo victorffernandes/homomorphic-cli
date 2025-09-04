@@ -1,258 +1,260 @@
 import numpy as np
 from numpy.polynomial import Polynomial
-# from scipy.fft import fft, ifft # Você pode manter isso se quiser comparar ou usar no futuro
 
-# --- Parâmetros do Esquema CKKS (Simplificado) ---
-N = 16
-Q_CHAIN = [103427, 1000000037, 1000000063, 1000000073]
-Q = 103427
-DELTA = 2**12 # Mantendo o DELTA alto que mostrou melhora no DC
+# --- FUNÇÃO DE LOG PARA DEPURAÇÃO ---
+def log_poly(name, poly, q_mod=None):
+    """Imprime um resumo de um polinômio para depuração."""
+    # Garante que os coeficientes sejam um array numpy para as operações
+    coeffs = np.array(poly.coef, dtype=np.int64)
+    print(f"--- LOG: {name} ---")
+    print(f"    Primeiros 8 coefs: {coeffs[:8]}")
+    print(f"    Max coef: {np.max(coeffs)}")
+    print(f"    Min coef: {np.min(coeffs)}")
+    if q_mod:
+        # Norma L-infinito: maior valor absoluto após o centered lift
+        centered_coeffs = np.where(coeffs > q_mod // 2, coeffs - q_mod, coeffs)
+        linf_norm = np.max(np.abs(centered_coeffs))
+        print(f"    Norma L-infinito (vs q={q_mod}): {linf_norm}")
+    print("-" * 20)
+
+
+# --- Parâmetros ---
+N = 2048
+Q_CHAIN = [1099511922689, 1099512004609, 1099512037377]
+DELTA = 1099511922688 
 SIGMA = 3.2
-POLY_MOD_RING_COEFFS = [0] * N + [1]
-POLY_MOD_RING_COEFFS[0] = 1
-POLY_MOD_RING = Polynomial(POLY_MOD_RING_COEFFS)
+POLY_MOD_RING = Polynomial([1] + [0] * (N - 1) + [1])
 
-# --- Funções Auxiliares para Polinômios---
+# --- Funções Auxiliares ---
 def poly_coeffs_mod_q(p_numpy, q_coeff):
-    coeffs = np.mod(np.round(p_numpy.coef).astype(np.int64), q_coeff)
+    coeffs = p_numpy.coef.copy()
+    for i in range(len(coeffs)):
+        coeffs[i] = int(coeffs[i]) % q_coeff
     return Polynomial(coeffs)
 
 def poly_ring_mod(p_numpy, ring_poly_mod, q_coeff):
     remainder_poly = p_numpy % ring_poly_mod
     return poly_coeffs_mod_q(remainder_poly, q_coeff)
 
+def poly_mul_mod(p1, p2, q, ring_poly_mod):
+    coeffs1 = [int(c) for c in p1.coef]
+    coeffs2 = [int(c) for c in p2.coef]
+    prod_coeffs = [0] * (len(coeffs1) + len(coeffs2) - 1)
+    for i in range(len(coeffs1)):
+        for j in range(len(coeffs2)):
+            prod_coeffs[i + j] += coeffs1[i] * coeffs2[j]
+    full_poly = Polynomial(prod_coeffs)
+    return poly_ring_mod(full_poly, ring_poly_mod, q)
+
 def generate_gaussian_poly(degree_n, sigma_val):
     coeffs = np.round(np.random.normal(0, sigma_val, size=degree_n)).astype(np.int64)
     return Polynomial(coeffs)
 
 def generate_uniform_random_poly(degree_n, q_bound):
-    coeffs = np.random.randint(0, q_bound, size=degree_n)
+    coeffs = np.random.randint(0, q_bound, size=degree_n, dtype=np.int64)
     return Polynomial(coeffs)
 
-# --- Geração de Chaves (Key Generation)---
+# --- Funções do Esquema CKKS ---
+
 def keygen(n_degree, ring_poly_mod, q_mod, sigma_err):
     sk_s = generate_gaussian_poly(n_degree, sigma_err)
     pk_a = generate_uniform_random_poly(n_degree, q_mod)
     e_err = generate_gaussian_poly(n_degree, sigma_err)
-    neg_a_s = -pk_a * sk_s
-    pk_b = poly_ring_mod(neg_a_s + e_err, ring_poly_mod, q_mod)
-    return sk_s, (pk_b, pk_a)
+    neg_a_s = -poly_mul_mod(pk_a, sk_s, q_mod, ring_poly_mod)
+    pk_b = (neg_a_s + e_err) % ring_poly_mod
+    return sk_s, (poly_coeffs_mod_q(pk_b, q_mod), pk_a)
 
-def relin_keygen(sk, n, q, p, sigma):
-    """Gera a chave de relinearização (evk), uma criptografia de P*s^2."""
-    a_prime = generate_uniform_random_poly(n, q * p) # Gerado em um módulo maior
-    e_prime = generate_uniform_random_poly(n, sigma)
-    sk_squared = sk * sk
-    
-    # evk é gerado com P e depois reduzido
-    evk0 = -a_prime * sk + e_prime + p * sk_squared
-    evk1 = a_prime
-    
-    # A chave é um par de polinômios em R_{q*p}
-    return (evk0, evk1)
+def create_relin_key(sk_s, n_degree, ring_poly_mod, q_chain, sigma_err):
+    print("Gerando chave de relinearização (RLK)...")
+    q_mod = q_chain[-1]
+    sk_s_squared = poly_mul_mod(sk_s, sk_s, q_mod, ring_poly_mod)
+    rlk_a = generate_uniform_random_poly(n_degree, q_mod)
+    e_err = generate_gaussian_poly(n_degree, sigma_err)
+    neg_a_s = -poly_mul_mod(rlk_a, sk_s, q_mod, ring_poly_mod)
+    rlk_b = (neg_a_s + e_err + sk_s_squared) % ring_poly_mod
+    return (poly_coeffs_mod_q(rlk_b, q_mod), rlk_a)
 
-
-# --- NOVA Codificação Correta para Dados Reais (N/2 entradas) ---
-def ckks_encode_real(real_vector_n_half_elements, delta_scale, n_poly_coeffs):
-    """
-    Codifica N/2 elementos reais em um polinômio de N coeficientes reais.
-    Usa np.fft.irfft para garantir que os coeficientes do polinômio sejam reais.
-    """
+def ckks_encode_real(real_vector, delta_scale, n_poly_coeffs):
     num_input_elements = n_poly_coeffs // 2
-    if len(real_vector_n_half_elements) != num_input_elements:
-        raise ValueError(f"O vetor de entrada deve ter {num_input_elements} elementos reais.")
+    z = np.zeros(n_poly_coeffs // 2 + 1, dtype=np.complex128)
+    z[:len(real_vector)] = np.array(real_vector, dtype=np.complex128) * delta_scale
+    poly_real_coeffs = np.fft.irfft(z, n=n_poly_coeffs)
+    return Polynomial(np.round(poly_real_coeffs).astype(np.int64))
 
-    scaled_real_vector = np.array(real_vector_n_half_elements) * delta_scale
-    print(f"DEBUG ENCODE REAL: scaled_real_vector (N/2 elementos): {scaled_real_vector}")
-
-    # Prepara o espectro de entrada para irfft (tamanho N/2 + 1)
-    # A entrada para irfft é o espectro de frequência não redundante de um sinal real.
-    spectrum_for_irfft = np.zeros(num_input_elements + 1, dtype=np.complex128)
-    
-    # Mapeia os N/2 valores reais para as componentes do espectro
-    # scaled_real_vector[0] -> componente DC (frequência 0)
-    # scaled_real_vector[1] até scaled_real_vector[N/2-1] -> componentes de frequência positiva
-    spectrum_for_irfft[:num_input_elements] = scaled_real_vector 
-    
-    # A componente de Nyquist (índice N/2) é definida como 0, pois temos N/2 entradas.
-    # Se tivéssemos um (N/2)-ésimo valor, poderíamos colocá-lo aqui (deve ser real).
-    # Se scaled_real_vector já tivesse N/2+1 elementos, usaríamos todos.
-    # No nosso caso, estamos mapeando N/2 valores, então a última entrada de spectrum_for_irfft
-    # (correspondente à frequência de Nyquist se existisse um (N/2)-ésimo z_k) fica 0
-    # ou poderia ser o último elemento de scaled_real_vector se N/2 fosse usado para Nyquist
-    # e os outros N/2-1 para freq positivas.
-    # Para ser claro: z0,...,z_{N/2-1}
-    # spectrum_for_irfft[0] = z0_scaled
-    # spectrum_for_irfft[1] = z1_scaled
-    # ...
-    # spectrum_for_irfft[N/2-1] = z_{N/2-1}_scaled
-    # spectrum_for_irfft[N/2] = 0 (Nyquist, não temos um z_{N/2})
-
-    print(f"DEBUG ENCODE REAL: spectrum_for_irfft (N/2+1 elementos): {spectrum_for_irfft}")
-
-    # np.fft.irfft produzirá um output de n_poly_coeffs elementos REAIS
-    poly_real_coeffs = np.fft.irfft(spectrum_for_irfft, n=n_poly_coeffs)
-    print(f"DEBUG ENCODE REAL: poly_real_coeffs (saída da irfft, N elementos): {poly_real_coeffs}") # print primeiros 8
-
-    message_coeffs_int = np.round(poly_real_coeffs).astype(np.int64)
-    print(f"DEBUG ENCODE REAL: message_coeffs_int (arredondado, N elementos): {message_coeffs_int[:8]}") # print primeiros 8
-    return Polynomial(message_coeffs_int)
-
-# --- NOVA Decodificação Correta para Dados Reais ---
-def ckks_decode_real(message_poly_m_prime, delta_scale, n_poly_coeffs):
-    """
-    Decodifica um polinômio de N coeficientes reais para N/2 elementos reais.
-    Usa np.fft.rfft.
-    """
+def ckks_decode_real(message_poly, delta_scale, n_poly_coeffs, q_mod):
     num_output_elements = n_poly_coeffs // 2
+    coeffs = message_poly.coef
     
-    coeffs_to_transform = message_poly_m_prime.coef.copy() # Garante que é um array e não uma view
-    # Garante que o vetor de coeficientes tenha tamanho n_poly_coeffs para a rfft
-    if len(coeffs_to_transform) < n_poly_coeffs:
-        coeffs_to_transform = np.pad(coeffs_to_transform, (0, n_poly_coeffs - len(coeffs_to_transform)), 'constant')
-    elif len(coeffs_to_transform) > n_poly_coeffs:
-        coeffs_to_transform = coeffs_to_transform[:n_poly_coeffs]
-    
-    print(f"DEBUG DECODE REAL: coeffs_to_transform (para rfft, N elementos): {coeffs_to_transform[:8]}")
-
-    # np.fft.rfft de dados reais produz um espectro de N/2 + 1 componentes complexas
-    decoded_scaled_half_spectrum = np.fft.rfft(coeffs_to_transform, n=n_poly_coeffs)
-    print(f"DEBUG DECODE REAL: decoded_scaled_half_spectrum (N/2+1 elementos): {decoded_scaled_half_spectrum[:num_output_elements+1]}")
-
-
-    # Estamos interessados nos primeiros N/2 componentes, que correspondem aos nossos dados de entrada originais
-    # Como os dados originais eram reais, a parte real desses componentes é o que queremos.
-    # Pequenos erros numéricos podem introduzir partes imaginárias minúsculas.
-    decoded_real_values = np.real(decoded_scaled_half_spectrum[:num_output_elements]) / delta_scale
-    
-    return decoded_real_values
-
-# --- Criptografia (Encryption)---
-def encrypt(message_poly_m, public_key_pk, n_degree, ring_poly_mod, q_mod, sigma_err):
-    pk_b, pk_a = public_key_pk
-    u_rand_poly = generate_gaussian_poly(n_degree, sigma_err)
-    e1_err_poly = generate_gaussian_poly(n_degree, sigma_err)
-    e2_err_poly = generate_gaussian_poly(n_degree, sigma_err)
-    tmp_pkb_u = pk_b * u_rand_poly
-    c0 = poly_ring_mod(tmp_pkb_u + e1_err_poly + message_poly_m, ring_poly_mod, q_mod)
-    tmp_pka_u = pk_a * u_rand_poly
-    c1 = poly_ring_mod(tmp_pka_u + e2_err_poly, ring_poly_mod, q_mod)
-    return c0, c1
-
-# --- Descriptografia (Decryption)---
-def decrypt(ciphertext_ct, secret_key_sk_s, ring_poly_mod, q_mod):
-    c0, c1 = ciphertext_ct
-    c1_s = c1 * secret_key_sk_s
-    decrypted_poly_scaled = poly_ring_mod(c0 + c1_s, ring_poly_mod, q_mod)
-    coeffs = decrypted_poly_scaled.coef
     corrected_coeffs = np.where(coeffs > q_mod // 2, coeffs - q_mod, coeffs)
-    return Polynomial(corrected_coeffs)
-
-def add_homomorphic(ct1, ct2):
-    ct10, ct11 = ct1
-    ct20, ct21 = ct2
-
-    return ct10 + ct20, ct11 + ct21
-
-def Multevk(c1, c2, evk, P, q, ring_poly):
-    """
-    Calcula o produto homomórfico de c1 e c2 usando a chave de avaliação evk.
-    Implementa a fórmula: cmult = (d0, d1) + floor(P^-1 * d2 * evk)
-    """
-    # --- Passo 1: Multiplicação Bruta ---
-    # c1 = (b1, a1), c2 = (b2, a2)
-    b1, a1 = c1
-    b2, a2 = c2
+    log_poly("Polinômio para DECODIFICAR (após centered lift)", Polynomial(corrected_coeffs))
     
-    # Calcula (d0, d1, d2) = (b1b2, a1b2 + a2b1, a1a2) (mod q)
-    d0 = poly_ring_mod(b1 * b2, ring_poly, q)
-    d1 = poly_ring_mod(a1 * b2 + a2 * b1, ring_poly, q)
-    d2 = poly_ring_mod(a1 * a2, ring_poly, q)
-
-    # --- Passo 2: Relinearização com a evk ---
-    evk0, evk1 = evk
+    coeffs_for_fft = corrected_coeffs.astype(np.float64)
     
-    # Calcula (d2 * evk) sobre os inteiros (apenas redução pelo anel de polinômios)
-    # A lógica de generate_relinkey agora gera a evk em um módulo maior
-    d2_evk0_full =  poly_ring_mod(d2 * evk0, ring_poly, q)
-    d2_evk1_full = poly_ring_mod(d2 * evk1 , ring_poly, q)
+    decoded_scaled_spectrum = np.fft.rfft(coeffs_for_fft, n=n_poly_coeffs)
+    return np.real(decoded_scaled_spectrum[:num_output_elements]) / delta_scale
 
-    # Calcula floor(P^-1 * ...) usando aritmética inteira robusta
-    corr0_coeffs = d2_evk0_full / P
-    corr1_coeffs = d2_evk1_full / P
-    
-    corr0 = Polynomial(corr0_coeffs.coef.astype(np.int64))
-    corr1 = Polynomial(corr1_coeffs.coef.astype(np.int64))
+def encrypt(message_poly, pk, n_degree, ring_poly_mod, q_mod, sigma_err):
+    pk_b, pk_a = pk
+    u = generate_gaussian_poly(n_degree, sigma_err)
+    e1 = generate_gaussian_poly(n_degree, sigma_err)
+    e2 = generate_gaussian_poly(n_degree, sigma_err)
+    c0 = (poly_mul_mod(pk_b, u, q_mod, ring_poly_mod) + e1 + message_poly)
+    c1 = (poly_mul_mod(pk_a, u, q_mod, ring_poly_mod) + e2)
+    return {
+        'c0': poly_ring_mod(c0, ring_poly_mod, q_mod), 
+        'c1': poly_ring_mod(c1, ring_poly_mod, q_mod), 
+        'level': len(Q_CHAIN) - 1, 
+        'scale': DELTA
+    }
 
-    # Adiciona o termo de correção a (d0, d1) para obter o texto cifrado final
-    cmult_b = poly_ring_mod(d0 + corr0_coeffs, ring_poly, q)
-    cmult_a = poly_ring_mod(d1 + corr1_coeffs, ring_poly, q)
-    
-    return (cmult_b, cmult_a)
+def decrypt(ct, sk, ring_poly_mod, q_chain):
+    level = ct['level']
+    q_mod = q_chain[level]
+    c0, c1 = ct['c0'], ct['c1']
+    c1_s = poly_mul_mod(c1, sk, q_mod, ring_poly_mod)
+    decrypted_poly = (c0 + c1_s)
+    final_poly = poly_ring_mod(decrypted_poly, ring_poly_mod, q_mod)
+    log_poly(f"Polinômio DESCRIPTOGRAFADO (nível {level})", final_poly, q_mod)
+    return final_poly
 
-def rescale(ct, q, delta):
-    """Rescala um texto cifrado, dividindo-o por delta e mudando o módulo."""
-    c0, c1 = ct
-    
-    # Centraliza os coeficientes antes da divisão
-    q_ = q / delta
-    c0_centered = c0 * (q / q_)
-    c1_centered = c1 * (q / q_)
+def add_homomorphic(ct1, ct2, ring_poly_mod, q_chain):
+    level = ct1['level']
+    q_mod = q_chain[level]
+    c0_add = (ct1['c0'] + ct2['c0'])
+    c1_add = (ct1['c1'] + ct2['c1'])
+    return {
+        'c0': poly_ring_mod(c0_add, ring_poly_mod, q_mod), 
+        'c1': poly_ring_mod(c1_add, ring_poly_mod, q_mod), 
+        'level': level, 
+        'scale': ct1['scale']
+    }
 
-    # # A "divisão" robusta é feita com arredondamento
-    # c0_rescaled = np.round(c0_centered)
-    # c1_rescaled = np.round(c1_centered)
+def multiply_homomorphic_step1(ct1, ct2, ring_poly_mod, q_chain):
+    level = ct1['level']
+    q_mod = q_chain[level]
+    d0 = poly_mul_mod(ct1['c0'], ct2['c0'], q_mod, ring_poly_mod)
+    d1_p1 = poly_mul_mod(ct1['c0'], ct2['c1'], q_mod, ring_poly_mod)
+    d1_p2 = poly_mul_mod(ct1['c1'], ct2['c0'], q_mod, ring_poly_mod)
+    d1 = (d1_p1 + d1_p2)
+    d2 = poly_mul_mod(ct1['c1'], ct2['c1'], q_mod, ring_poly_mod)
+    return {'d0': d0, 'd1': d1, 'd2': d2, 'level': level, 'scale': ct1['scale'] * ct2['scale']}
+
+def relinearize(ct_3part, rlk, ring_poly_mod, q_chain):
+    level = ct_3part['level']
+    q_mod = q_chain[level]
+    d0, d1, d2 = ct_3part['d0'], ct_3part['d1'], ct_3part['d2']
+    rlk_b, rlk_a = rlk
+    c0_new = (d0 + poly_mul_mod(d2, rlk_b, q_mod, ring_poly_mod))
+    c1_new = (d1 + poly_mul_mod(d2, rlk_a, q_mod, ring_poly_mod))
+    return {
+        'c0': poly_ring_mod(c0_new, ring_poly_mod, q_mod),
+        'c1': poly_ring_mod(c1_new, ring_poly_mod, q_mod),
+        'level': level, 
+        'scale': ct_3part['scale']
+    }
+
+def rescale(ct, ring_poly_mod, q_chain, delta_scale):
+    level = ct['level']
+    if level == 0:
+        raise ValueError("Não há mais níveis para rescalonar.")
     
-    # Retorna o texto cifrado rescalado (agora em um anel com módulo q/delta)
-    return (poly_ring_mod(Polynomial(c0_centered.coef.astype(np.int64)), POLY_MOD_RING, q_),
-            poly_ring_mod(Polynomial(c1_centered.coef.astype(np.int64)), POLY_MOD_RING, q_))
+    q_next = q_chain[level - 1]
+    
+    # LOGS ADICIONADOS AQUI PARA VER A DESTRUIÇÃO DOS DADOS
+    c0_coeffs_obj = ct['c0'].coef
+    c0_coeffs_numeric = c0_coeffs_obj.astype(np.float64)
+    print("\n--- LOG: DENTRO DO RESCALE (para c0) ---")
+    print(f"    Coefs ANTES da divisão: {c0_coeffs_numeric[:8]}")
+    c0_divided = c0_coeffs_numeric / delta_scale
+    print(f"    Coefs DEPOIS da divisão por DELTA: {c0_divided[:8]}")
+    c0_rounded = np.round(c0_divided)
+    print(f"    Coefs DEPOIS do round: {c0_rounded[:8]}")
+    print("-" * 20)
+    
+    c0_rescaled_coeffs = c0_rounded.astype(np.int64)
+    
+    c1_coeffs_numeric = ct['c1'].coef.astype(np.float64)
+    c1_rescaled_coeffs = np.round(c1_coeffs_numeric / delta_scale).astype(np.int64)
+    
+    c0_rescaled = Polynomial(c0_rescaled_coeffs)
+    c1_rescaled = Polynomial(c1_rescaled_coeffs)
+    
+    new_scale = ct['scale'] / delta_scale
+    
+    return {
+        'c0': poly_ring_mod(c0_rescaled, ring_poly_mod, q_next), 
+        'c1': poly_ring_mod(c1_rescaled, ring_poly_mod, q_next), 
+        'level': level - 1, 
+        'scale': new_scale
+    }
 
 # --- Demonstração de Uso ---
 if __name__ == "__main__":
-    print(f"Parâmetros: N={N}, Q={Q}, DELTA={DELTA}, SIGMA={SIGMA}")
-    print(f"Anel R_Q = Z_{Q}[X]/(X^{N}+1)")
-    print("-" * 40)
-    P = 2**16
+    print(f"Parâmetros: N={N}, DELTA≈2^{int(np.log2(DELTA))}, Q_CHAIN de ~{Q_CHAIN[0].bit_length()} bits")
+    print("-" * 50)
 
-    # 1. Geração de Chaves
-    sk, pk = keygen(N, POLY_MOD_RING, Q, SIGMA)
-    evk = relin_keygen(sk, N, Q, P, SIGMA)
-    print("Chave Secreta (sk) gerada.")
-    print("Chave Pública (pk) gerada.")
-    print("-" * 40)
+    Q_INITIAL = Q_CHAIN[-1]
+    sk, pk = keygen(N, POLY_MOD_RING, Q_INITIAL, SIGMA)
+    rlk = create_relin_key(sk, N, POLY_MOD_RING, Q_CHAIN, SIGMA)
+    print("Chaves geradas.")
+    print("-" * 50)
 
-    # 2. Preparar Texto Claro (AGORA N/2 elementos) e Codificar
     num_plaintext_elements = N // 2
-    # plaintext_real_vector_half = np.random.rand(num_plaintext_elements) * 2 - 1
-    plaintext_real_vector_half = np.array([0.1 * i for i in range(num_plaintext_elements)]) - 0.7
+    m1 = np.array([1, 1, 1, 1] + [0] * (num_plaintext_elements - 4))
+    m2 = np.array([0.5, -0.6, 0.7, 0.8] + [0] * (num_plaintext_elements - 4))
     
-    print(f"Vetor de Texto Claro Original (z) ({num_plaintext_elements} elementos): \n{np.round(plaintext_real_vector_half, 3)}")
+    print(f"Texto claro m1 (primeiros 4): {m1[:4]}")
+    print(f"Texto claro m2 (primeiros 4): {m2[:4]}")
+    
+    encoded_m1 = ckks_encode_real(m1, DELTA, N)
+    encoded_m2 = ckks_encode_real(m2, DELTA, N)
+    
+    ct1 = encrypt(encoded_m1, pk, N, POLY_MOD_RING, Q_INITIAL, SIGMA)
+    ct2 = encrypt(encoded_m2, pk, N, POLY_MOD_RING, Q_INITIAL, SIGMA)
+    print(f"Nível inicial dos textos cifrados: {ct1['level']}")
+    print("-" * 50)
 
-    encoded_message_poly = ckks_encode_real(plaintext_real_vector_half, DELTA, N)
-    print(f"Polinômio da Mensagem Codificada (m) (coefs. primeiros 8): \n{encoded_message_poly.coef[:8]}")
-    print("-" * 40)
+    print("--- TESTE DE ADIÇÃO HOMOMÓRFICA ---")
+    ct_add = add_homomorphic(ct1, ct2, POLY_MOD_RING, Q_CHAIN)
+    decrypted_add_poly = decrypt(ct_add, sk, POLY_MOD_RING, Q_CHAIN)
+    q_level_add = Q_CHAIN[ct_add['level']]
+    decoded_add_vector = ckks_decode_real(decrypted_add_poly, ct_add['scale'], N, q_level_add)
+    print(f"Resultado esperado (m1 + m2): {np.round(m1 + m2, 4)[:4]}")
+    print(f"Resultado obtido (Adição):   {np.round(decoded_add_vector, 4)[:4]}")
+    print("-" * 50)
 
-    # 3. Criptografar
-    ct = encrypt(encoded_message_poly, pk, N, POLY_MOD_RING, Q, SIGMA)
-    print(f"Mensagem Criptografada (ct = (c0,c1)) {ct[0]}, {ct[1]}.")
-    print("-" * 40)
+    print("--- TESTE DE MULTIPLICAÇÃO HOMOMÓRFICA ---")
+    ct_mult_3part = multiply_homomorphic_step1(ct1, ct2, POLY_MOD_RING, Q_CHAIN)
+    ct_mult_relin = relinearize(ct_mult_3part, rlk, POLY_MOD_RING, Q_CHAIN)
+    
+    # --- DIAGNÓSTICO INTERMEDIÁRIO ---
+    print("\n\n--- DIAGNÓSTICO: Testando o resultado ANTES do rescale ---\n")
+    scale_before_rescale = ct_mult_relin['scale']
+    q_level_before_rescale = Q_CHAIN[ct_mult_relin['level']]
+    
+    decrypted_poly_before_rescale = decrypt(ct_mult_relin, sk, POLY_MOD_RING, Q_CHAIN)
+    decoded_vector_before_rescale = ckks_decode_real(decrypted_poly_before_rescale, scale_before_rescale, N, q_level_before_rescale)
+    
+    print(f"Escala esperada antes do rescale: {DELTA**2}")
+    print(f"Resultado esperado (m1*m2): {np.round(m1*m2, 4)[:8]}")
+    print(f"Resultado obtido ANTES do rescale: {decoded_vector_before_rescale[:8]}")
+    error_before = np.max(np.abs((m1 * m2) - decoded_vector_before_rescale))
+    print(f"--> Erro máximo ANTES do rescale: {error_before:.10f}\n")
+    print("--- FIM DO DIAGNÓSTICO ---\n\n")
+    
+    
+    # --- CONTINUAÇÃO DO FLUXO NORMAL ---
+    ct_mult_final = rescale(ct_mult_relin, POLY_MOD_RING, Q_CHAIN, DELTA)
+    
+    print(f"Escala final é {ct_mult_final['scale']:.4f}")
+    print(f"Nível final do texto cifrado: {ct_mult_final['level']}")
 
-    ct = Multevk(ct, ct, evk, P, Q, POLY_MOD_RING)
-    ct = rescale(ct, Q, DELTA)
-    Q = Q/DELTA
-
-    # 4. Descriptografar
-    decrypted_scaled_poly = decrypt(ct, sk, POLY_MOD_RING, Q)
-    print(f"Polinômio Descriptografado Escalonado (m') (coefs. primeiros 8): \n{decrypted_scaled_poly.coef[:8]}")
-    print("-" * 40)
-
-    # 5. Decodificar
-    decoded_approx_vector_half = ckks_decode_real(decrypted_scaled_poly, DELTA, N)
-    print(f"Vetor Decodificado Aproximado (z') ({num_plaintext_elements} elementos): \n{np.round(decoded_approx_vector_half, 3)}")
-    print("-" * 40)
-
-    # Comparar original e decodificado
-    error = plaintext_real_vector_half * 2 - decoded_approx_vector_half
-    print(f"Erro (z - z') ({num_plaintext_elements} elementos): \n{np.round(error, 5)}")
-    print(f"Erro Máximo Absoluto: {np.max(np.abs(error)):.5f}")
-    print(f"Erro Médio Quadrático: {np.sqrt(np.mean(error**2)):.5f}")
+    decrypted_mult_poly = decrypt(ct_mult_final, sk, POLY_MOD_RING, Q_CHAIN)
+    q_level_mult = Q_CHAIN[ct_mult_final['level']]
+    decoded_mult_vector = ckks_decode_real(decrypted_mult_poly, ct_mult_final['scale'], N, q_level_mult)
+    
+    print(f"Resultado esperado (m1 * m2): {np.round(m1 * m2, 4)[:4]}")
+    print(f"Resultado obtido (Multiplicação): {np.round(decoded_mult_vector, 4)[:4]}")
+    
+    error = np.max(np.abs((m1 * m2) - decoded_mult_vector))
+    print(f"\nErro máximo absoluto na multiplicação: {error:.10f}")

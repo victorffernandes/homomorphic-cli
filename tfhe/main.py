@@ -29,10 +29,9 @@ def tlwe(s):
 
 def trivial_tlwe(m):
     a = np.array(np.zeros(shape=(k,N)))
-    b = np.array([m])
+    b = np.array([m] + [0] * (N-1))  # b tem tamanho N com m na primeira posição
     
-    a = np.append(a,[b])
-    a.shape = (k+1,N)
+    a = np.append(a,[b], axis=0)
     
     return a
 
@@ -140,6 +139,6 @@ def phase_tgsw(tgsw_s, secret, l):
 
 l = 4
 # print(H(l, 2))
-s = tgsw(0, l, H(l, 2))
+# s = tgsw(0, l, H(l, 2))  # Comentado para evitar erro durante import
 # print(phase_tgsw(s, secret, l))
 # #dec = decompose(a, 2, l)
