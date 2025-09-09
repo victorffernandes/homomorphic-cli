@@ -1,4 +1,3 @@
-from tfhe_main import trivial_tlwe, phase_s, k, N, secret
 import pytest
 import numpy as np
 import sys
@@ -6,6 +5,9 @@ import os
 
 # Adiciona o diretório atual ao path para importar main.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Import deve vir depois da configuração do path
+from tfhe_main import trivial_tlwe, phase_s, k, N, secret
 
 
 class TestTFHEExample:

@@ -85,15 +85,15 @@ def create_relin_key(sk_s, n_degree, ring_poly_mod, q_chain, sigma_err):
 
 
 def ckks_encode_real(real_vector, delta_scale, n_poly_coeffs):
-    num_input_elements = n_poly_coeffs // 2
-    z = np.zeros(n_poly_coeffs // 2 + 1, dtype=np.complex128)
-    z[: len(real_vector)] = np.array(real_vector, dtype=np.complex128) * delta_scale
+    # num_input_elements = n_poly_coeffs // 2
+    z = np.zeros(n_poly_coeffs // 2 + 1, dtype=np.float64)
+    z[: len(real_vector)] = np.array(real_vector, dtype=np.float64) * delta_scale
     poly_real_coeffs = np.fft.irfft(z, n=n_poly_coeffs)
     return Polynomial(np.round(poly_real_coeffs).astype(np.int64))
 
 
 def ckks_decode_real(message_poly, delta_scale, n_poly_coeffs, q_mod):
-    num_output_elements = n_poly_coeffs // 2
+    num_output_elements = n_poly_coeffs - 1
     coeffs = message_poly.coef
 
     corrected_coeffs = np.where(coeffs > q_mod // 2, coeffs - q_mod, coeffs)
