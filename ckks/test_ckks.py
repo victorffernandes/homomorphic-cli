@@ -1,4 +1,4 @@
-from ckks_main import ckks_encode_real, ckks_decode_real
+from .ckks_main import ckks_encode_real, ckks_decode_real
 from .constants import CKKSCryptographicParameters
 import pytest
 import numpy as np

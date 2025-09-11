@@ -1,9 +1,15 @@
 import numpy as np
+from .ckks import CKKSCiphertext
 from numpy.polynomial import Polynomial
-from constants import CKKSCryptographicParameters
+from .constants import CKKSCryptographicParameters
+from .factories import CKKSCiphertextFactory, CKKSKeyFactory
 
 # Criação da instância global dos parâmetros
 crypto_params = CKKSCryptographicParameters()
+
+# Criação das factories
+ciphertext_factory = CKKSCiphertextFactory(crypto_params)
+key_factory = CKKSKeyFactory(crypto_params)
 
 
 # --- FUNÇÃO DE LOG PARA DEPURAÇÃO ---
@@ -23,87 +29,7 @@ def log_poly(name, poly, q_mod=None):
     print("-" * 20)
 
 
-# --- Funções do Esquema CKKS ---
-def keygen(n_degree, ring_poly_mod, q_mod, sigma_err):
-    sk_s = crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-    pk_a = crypto_params.generate_uniform_random_poly(n_degree, q_mod)
-    e_err = crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-    neg_a_s = -crypto_params.poly_mul_mod(pk_a, sk_s, q_mod, ring_poly_mod)
-    pk_b = (neg_a_s + e_err) % ring_poly_mod
-    return sk_s, (crypto_params.poly_coeffs_mod_q(pk_b, q_mod), pk_a)
-
-
-def create_relin_key(sk_s, n_degree, ring_poly_mod, q_chain, sigma_err):
-    print("Gerando chave de relinearização (RLK)...")
-    q_mod = q_chain[-1]
-    sk_s_squared = crypto_params.poly_mul_mod(sk_s, sk_s, q_mod, ring_poly_mod)
-    rlk_a = crypto_params.generate_uniform_random_poly(n_degree, q_mod)
-    e_err = crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-    neg_a_s = -crypto_params.poly_mul_mod(rlk_a, sk_s, q_mod, ring_poly_mod)
-    rlk_b = (neg_a_s + e_err + sk_s_squared) % ring_poly_mod
-    return (crypto_params.poly_coeffs_mod_q(rlk_b, q_mod), rlk_a)
-
-
-def ckks_encode_real(real_vector, delta_scale, n_poly_coeffs):
-    # num_input_elements = n_poly_coeffs // 2
-    z = np.zeros(n_poly_coeffs // 2 + 1, dtype=np.float64)
-    z[: len(real_vector)] = np.array(real_vector, dtype=np.float64) * delta_scale
-    poly_real_coeffs = np.fft.irfft(z, n=n_poly_coeffs)
-    return Polynomial(np.round(poly_real_coeffs).astype(np.int64))
-
-
-def ckks_decode_real(message_poly, delta_scale, n_poly_coeffs, q_mod):
-    num_output_elements = n_poly_coeffs - 1
-    coeffs = message_poly.coef
-
-    corrected_coeffs = np.where(coeffs > q_mod // 2, coeffs - q_mod, coeffs)
-    log_poly(
-        "Polinômio para DECODIFICAR (após centered lift)", Polynomial(corrected_coeffs)
-    )
-
-    coeffs_for_fft = corrected_coeffs.astype(np.float64)
-
-    decoded_scaled_spectrum = np.fft.rfft(coeffs_for_fft, n=n_poly_coeffs)
-    return np.real(decoded_scaled_spectrum[:num_output_elements]) / delta_scale
-
-
-def encrypt(message_poly, pk, n_degree, ring_poly_mod, q_mod, sigma_err):
-    pk_b, pk_a = pk
-    u = crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-    e1 = crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-    e2 = crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-    c0 = crypto_params.poly_mul_mod(pk_b, u, q_mod, ring_poly_mod) + e1 + message_poly
-    c1 = crypto_params.poly_mul_mod(pk_a, u, q_mod, ring_poly_mod) + e2
-    return {
-        "c0": crypto_params.poly_ring_mod(c0, ring_poly_mod, q_mod),
-        "c1": crypto_params.poly_ring_mod(c1, ring_poly_mod, q_mod),
-        "level": len(crypto_params.MODULUS_CHAIN) - 1,
-        "scale": crypto_params.SCALING_FACTOR,
-    }
-
-
-def decrypt(ct, sk, ring_poly_mod, q_chain):
-    level = ct["level"]
-    q_mod = q_chain[level]
-    c0, c1 = ct["c0"], ct["c1"]
-    c1_s = crypto_params.poly_mul_mod(c1, sk, q_mod, ring_poly_mod)
-    decrypted_poly = c0 + c1_s
-    final_poly = crypto_params.poly_ring_mod(decrypted_poly, ring_poly_mod, q_mod)
-    log_poly(f"Polinômio DESCRIPTOGRAFADO (nível {level})", final_poly, q_mod)
-    return final_poly
-
-
-def add_homomorphic(ct1, ct2, ring_poly_mod, q_chain):
-    level = ct1["level"]
-    q_mod = q_chain[level]
-    c0_add = ct1["c0"] + ct2["c0"]
-    c1_add = ct1["c1"] + ct2["c1"]
-    return {
-        "c0": crypto_params.poly_ring_mod(c0_add, ring_poly_mod, q_mod),
-        "c1": crypto_params.poly_ring_mod(c1_add, ring_poly_mod, q_mod),
-        "level": level,
-        "scale": ct1["scale"],
-    }
+# --- Funções de Operações Homomórficas ---
 
 
 def multiply_homomorphic_step1(ct1, ct2, ring_poly_mod, q_chain):
@@ -183,21 +109,13 @@ if __name__ == "__main__":
     )
     print("-" * 50)
 
-    Q_INITIAL = crypto_params.get_initial_modulus()
-    sk, pk = keygen(
-        crypto_params.POLYNOMIAL_DEGREE,
-        crypto_params.get_polynomial_modulus_ring(),
-        Q_INITIAL,
-        crypto_params.GAUSSIAN_NOISE_STDDEV,
-    )
-    rlk = create_relin_key(
-        sk,
-        crypto_params.POLYNOMIAL_DEGREE,
-        crypto_params.get_polynomial_modulus_ring(),
-        crypto_params.MODULUS_CHAIN,
-        crypto_params.GAUSSIAN_NOISE_STDDEV,
-    )
-    print("Chaves geradas.")
+    # Gera chaves usando a factory
+    keyset = key_factory.generate_full_keyset()
+    sk = keyset["secret_key"]
+    pk = keyset["public_key"]
+    rlk = keyset["relinearization_key"]
+
+    print("Chaves geradas usando CKKSKeyFactory.")
     print("-" * 50)
 
     num_plaintext_elements = crypto_params.get_maximum_plaintext_slots()
@@ -207,50 +125,32 @@ if __name__ == "__main__":
     print(f"Texto claro m1 (primeiros 4): {m1[:4]}")
     print(f"Texto claro m2 (primeiros 4): {m2[:4]}")
 
-    encoded_m1 = ckks_encode_real(
-        m1, crypto_params.SCALING_FACTOR, crypto_params.POLYNOMIAL_DEGREE
-    )
-    encoded_m2 = ckks_encode_real(
-        m2, crypto_params.SCALING_FACTOR, crypto_params.POLYNOMIAL_DEGREE
-    )
+    # Codifica e criptografa usando a factory
+    ct1_obj = ciphertext_factory.encode_and_encrypt(m1, pk)
+    ct2_obj = ciphertext_factory.encode_and_encrypt(m2, pk)
 
-    ct1 = encrypt(
-        encoded_m1,
-        pk,
-        crypto_params.POLYNOMIAL_DEGREE,
-        crypto_params.get_polynomial_modulus_ring(),
-        Q_INITIAL,
-        crypto_params.GAUSSIAN_NOISE_STDDEV,
-    )
-    ct2 = encrypt(
-        encoded_m2,
-        pk,
-        crypto_params.POLYNOMIAL_DEGREE,
-        crypto_params.get_polynomial_modulus_ring(),
-        Q_INITIAL,
-        crypto_params.GAUSSIAN_NOISE_STDDEV,
-    )
-    print(f"Nível inicial dos textos cifrados: {ct1['level']}")
+    print(f"Nível inicial dos textos cifrados: {ct1_obj.level}")
     print("-" * 50)
 
     print("--- TESTE DE ADIÇÃO HOMOMÓRFICA ---")
     poly_mod_ring = crypto_params.get_polynomial_modulus_ring()
     modulus_chain = crypto_params.MODULUS_CHAIN
 
-    ct_add = add_homomorphic(ct1, ct2, poly_mod_ring, modulus_chain)
-    decrypted_add_poly = decrypt(ct_add, sk, poly_mod_ring, modulus_chain)
-    q_level_add = modulus_chain[ct_add["level"]]
-    decoded_add_vector = ckks_decode_real(
-        decrypted_add_poly,
-        ct_add["scale"],
-        crypto_params.POLYNOMIAL_DEGREE,
-        q_level_add,
-    )
+    # Usa o método estático da classe CKKSCiphertext
+    ct_add_obj = CKKSCiphertext.add_homomorphic(ct1_obj, ct2_obj)
+
+    # Usa a factory para decrypt/decode
+    decoded_add_vector = ciphertext_factory.decrypt_and_decode(ct_add_obj, sk, len(m1))
+
     print(f"Resultado esperado (m1 + m2): {np.round(m1 + m2, 4)[:4]}")
     print(f"Resultado obtido (Adição):   {np.round(decoded_add_vector, 4)[:4]}")
     print("-" * 50)
 
     print("--- TESTE DE MULTIPLICAÇÃO HOMOMÓRFICA ---")
+    # Converte para formato dict para compatibilidade com funções existentes
+    ct1 = ct1_obj.to_dict()
+    ct2 = ct2_obj.to_dict()
+
     ct_mult_3part = multiply_homomorphic_step1(ct1, ct2, poly_mod_ring, modulus_chain)
     ct_mult_relin = relinearize(ct_mult_3part, rlk, poly_mod_ring, modulus_chain)
 
@@ -259,14 +159,9 @@ if __name__ == "__main__":
     scale_before_rescale = ct_mult_relin["scale"]
     q_level_before_rescale = modulus_chain[ct_mult_relin["level"]]
 
-    decrypted_poly_before_rescale = decrypt(
-        ct_mult_relin, sk, poly_mod_ring, modulus_chain
-    )
-    decoded_vector_before_rescale = ckks_decode_real(
-        decrypted_poly_before_rescale,
-        scale_before_rescale,
-        crypto_params.POLYNOMIAL_DEGREE,
-        q_level_before_rescale,
+    ct_mult_relin_obj = CKKSCiphertext.from_dict(ct_mult_relin, crypto_params)
+    decoded_vector_before_rescale = ciphertext_factory.decrypt_and_decode(
+        ct_mult_relin_obj, sk, len(m1)
     )
 
     print(
@@ -291,13 +186,9 @@ if __name__ == "__main__":
     print(f"Escala final é {ct_mult_final['scale']:.4f}")
     print(f"Nível final do texto cifrado: {ct_mult_final['level']}")
 
-    decrypted_mult_poly = decrypt(ct_mult_final, sk, poly_mod_ring, modulus_chain)
-    q_level_mult = modulus_chain[ct_mult_final["level"]]
-    decoded_mult_vector = ckks_decode_real(
-        decrypted_mult_poly,
-        ct_mult_final["scale"],
-        crypto_params.POLYNOMIAL_DEGREE,
-        q_level_mult,
+    ct_mult_final_obj = CKKSCiphertext.from_dict(ct_mult_final, crypto_params)
+    decoded_mult_vector = ciphertext_factory.decrypt_and_decode(
+        ct_mult_final_obj, sk, len(m1)
     )
 
     print(f"Resultado esperado (m1 * m2): {np.round(m1 * m2, 4)[:4]}")

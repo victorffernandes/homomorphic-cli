@@ -1,5 +1,5 @@
-from ckks import CKKSCiphertext
-from constants import CKKSCryptographicParameters
+from .ckks import CKKSCiphertext
+from .constants import CKKSCryptographicParameters
 import pytest
 from numpy.polynomial import Polynomial
 
@@ -177,6 +177,118 @@ class TestCKKSCiphertext:
         # Recriação a partir do dicionário
         ct_recreated = CKKSCiphertext.from_dict(dict_format)
         assert ct_recreated.size == 3
+
+    def test_add_homomorphic_basic(self):
+        """Teste de adição homomórfica básica"""
+        import numpy as np
+        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+
+        # Setup das factories
+        key_factory = CKKSKeyFactory(self.crypto_params)
+        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
+
+        # Gera chaves
+        keyset = key_factory.generate_full_keyset()
+        sk = keyset["secret_key"]
+        pk = keyset["public_key"]
+
+        # Vetores de teste
+        m1 = np.array([1.0, 2.0, 3.0, 4.0] + [0.0] * 508)
+        m2 = np.array([0.5, 1.5, 2.5, 3.5] + [0.0] * 508)
+
+        # Criptografa os vetores
+        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
+        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
+
+        # Realiza adição homomórfica
+        ct_sum = CKKSCiphertext.add_homomorphic(ct1, ct2)
+
+        # Descriptografa e decodifica o resultado
+        result = ciphertext_factory.decrypt_and_decode(ct_sum, sk, len(m1))
+
+        # Verifica o resultado
+        expected = m1 + m2
+        np.testing.assert_allclose(result[:4], expected[:4], rtol=1e-3)
+
+        # Verifica propriedades do ciphertext resultado
+        assert ct_sum.level == ct1.level == ct2.level
+        assert abs(ct_sum.scale - ct1.scale) < 1e-10
+        assert ct_sum.size == ct1.size == ct2.size
+
+    def test_add_homomorphic_incompatible_level(self):
+        """Teste de erro ao tentar somar ciphertexts com níveis diferentes"""
+        import numpy as np
+        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+
+        key_factory = CKKSKeyFactory(self.crypto_params)
+        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
+
+        keyset = key_factory.generate_full_keyset()
+        pk = keyset["public_key"]
+
+        m1 = np.array([1.0, 2.0] + [0.0] * 510)
+        m2 = np.array([3.0, 4.0] + [0.0] * 510)
+
+        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
+        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
+
+        # Modifica artificialmente o nível de um dos ciphertexts
+        ct2.level = ct1.level - 1
+
+        with pytest.raises(ValueError, match="não são compatíveis para adição"):
+            CKKSCiphertext.add_homomorphic(ct1, ct2)
+
+    def test_add_homomorphic_incompatible_scale(self):
+        """Teste de erro ao tentar somar ciphertexts com escalas diferentes"""
+        import numpy as np
+        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+
+        key_factory = CKKSKeyFactory(self.crypto_params)
+        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
+
+        keyset = key_factory.generate_full_keyset()
+        pk = keyset["public_key"]
+
+        m1 = np.array([1.0, 2.0] + [0.0] * 510)
+        m2 = np.array([3.0, 4.0] + [0.0] * 510)
+
+        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
+        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
+
+        # Modifica artificialmente a escala de um dos ciphertexts
+        ct2.scale = ct1.scale * 2
+
+        with pytest.raises(ValueError, match="não são compatíveis para adição"):
+            CKKSCiphertext.add_homomorphic(ct1, ct2)
+
+    def test_add_homomorphic_preserves_properties(self):
+        """Teste se a adição preserva propriedades importantes do ciphertext"""
+        import numpy as np
+        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+
+        key_factory = CKKSKeyFactory(self.crypto_params)
+        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
+
+        keyset = key_factory.generate_full_keyset()
+        pk = keyset["public_key"]
+
+        m1 = np.array([1.0, 2.0, 3.0] + [0.0] * 509)
+        m2 = np.array([0.1, 0.2, 0.3] + [0.0] * 509)
+
+        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
+        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
+
+        original_level = ct1.level
+        original_scale = ct1.scale
+        original_size = ct1.size
+
+        ct_sum = CKKSCiphertext.add_homomorphic(ct1, ct2)
+
+        # Verifica que as propriedades foram preservadas
+        assert ct_sum.level == original_level
+        assert abs(ct_sum.scale - original_scale) < 1e-10
+        assert ct_sum.size == original_size
+        assert ct_sum.crypto_params == ct1.crypto_params
 
 
 if __name__ == "__main__":

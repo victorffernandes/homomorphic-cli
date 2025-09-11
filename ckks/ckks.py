@@ -264,6 +264,51 @@ class CKKSCiphertext:
             )
         print("=" * 35)
 
+    @staticmethod
+    def add_homomorphic(
+        ct1: "CKKSCiphertext", ct2: "CKKSCiphertext"
+    ) -> "CKKSCiphertext":
+        """
+        Realiza adição homomórfica entre dois ciphertexts CKKS.
+
+        Args:
+            ct1: Primeiro ciphertext CKKS
+            ct2: Segundo ciphertext CKKS
+
+        Returns:
+            CKKSCiphertext: Resultado da adição homomórfica
+
+        Raises:
+            ValueError: Se os ciphertexts não são compatíveis para adição
+        """
+        # Validação de compatibilidade
+        if not ct1.can_add_with(ct2):
+            raise ValueError(
+                f"Ciphertexts não são compatíveis para adição. "
+                f"ct1: level={ct1.level}, scale={ct1.scale}, size={ct1.size}; "
+                f"ct2: level={ct2.level}, scale={ct2.scale}, size={ct2.size}"
+            )
+
+        # Obter parâmetros necessários
+        level = ct1.level
+        q_mod = ct1.current_modulus
+        crypto_params = ct1.crypto_params
+        ring_poly_mod = crypto_params.get_polynomial_modulus_ring()
+
+        # Realizar adição componente por componente
+        result_components = []
+        for i in range(ct1.size):
+            comp_add = ct1.components[i] + ct2.components[i]
+            comp_mod = crypto_params.poly_ring_mod(comp_add, ring_poly_mod, q_mod)
+            result_components.append(comp_mod)
+
+        return CKKSCiphertext(
+            components=result_components,
+            level=level,
+            scale=ct1.scale,
+            crypto_params=crypto_params,
+        )
+
 
 # Funções de conveniência para compatibilidade com código existente
 def create_ciphertext_from_dict(data: dict) -> CKKSCiphertext:
