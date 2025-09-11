@@ -1,21 +1,29 @@
 import numpy as np
+from .constants import TFHECryptographicParameters
 
-k = 1
-N = 4
+# Criação da instância global dos parâmetros
+crypto_params = TFHECryptographicParameters()
 
-alpha = 0.005
-secret = np.random.randint(2, size=(N))
-rng = np.random.default_rng()
-
-xN_1 = np.poly1d([1] + [0] * (N - 1) + [1])
+# Inicialização das variáveis usando os parâmetros centralizados
+secret = crypto_params.create_secret_key()
+rng = crypto_params.get_random_generator()
+xN_1 = crypto_params.get_polynomial_modulus()
 
 
 def error():
-    return rng.normal(scale=alpha, size=(N)) % 1
+    return (
+        rng.normal(
+            scale=crypto_params.NOISE_PARAMETER, size=(crypto_params.POLYNOMIAL_DEGREE)
+        )
+        % 1
+    )
 
 
 def tlwe(s):
-    a = np.array(rng.uniform(low=0, high=1, size=(k, N))) % 1
+    lwe_dim = crypto_params.LWE_DIMENSION
+    poly_deg = crypto_params.POLYNOMIAL_DEGREE
+
+    a = np.array(rng.uniform(low=0, high=1, size=(lwe_dim, poly_deg))) % 1
     b = np.array([0])
     for ax in a:
         product = np.polymul(np.poly1d(ax), np.poly1d(s))
@@ -24,14 +32,19 @@ def tlwe(s):
     b = mod_xN_1(b)
 
     z = np.append(a, [b])
-    z.shape = (k + 1, N)
+    z.shape = (lwe_dim + 1, poly_deg)
 
     return z
 
 
 def trivial_tlwe(m):
-    a = np.array(np.zeros(shape=(k, N)))
-    b = np.array([m] + [0] * (N - 1))  # b tem tamanho N com m na primeira posição
+    lwe_dim = crypto_params.LWE_DIMENSION
+    poly_deg = crypto_params.POLYNOMIAL_DEGREE
+
+    a = np.array(np.zeros(shape=(lwe_dim, poly_deg)))
+    b = np.array(
+        [m] + [0] * (poly_deg - 1)
+    )  # b tem tamanho N com m na primeira posição
 
     a = np.append(a, [b], axis=0)
 
@@ -39,8 +52,11 @@ def trivial_tlwe(m):
 
 
 def sum_tlwe(s1, s2):
-    a = np.array(np.zeros(shape=(k + 1, N)))
-    for i in range(k):
+    lwe_dim = crypto_params.LWE_DIMENSION
+    poly_deg = crypto_params.POLYNOMIAL_DEGREE
+
+    a = np.array(np.zeros(shape=(lwe_dim + 1, poly_deg)))
+    for i in range(lwe_dim):
         a[i] = mod_xN_1(np.polyadd(np.poly1d(s1[i]), np.poly1d(s2[i]))).coeffs
 
     # print("sum tlwe")
@@ -67,12 +83,12 @@ def mod_xN_1(P):
     return np.poly1d(resto)
 
 
-def decompose(a, bg, l):  # a kxN
+def decompose(a, bg, level_count):  # a kxN
     a_ = []
     for a_i in a:
         a_t = a_i
-        m = 1 / bg**l
-        a_t = np.around(a_i * bg**l) * m
+        m = 1 / bg**level_count
+        a_t = np.around(a_i * bg**level_count) * m
         a_.append(a_t)
 
     r = []
@@ -81,52 +97,54 @@ def decompose(a, bg, l):  # a kxN
         for a_ij in a_i:
             a_ijp = []
             residual = a_ij
-            for p in range(l):
+            for p in range(level_count):
                 z = round(residual * bg**p)
                 a_ijp.append(z)
                 residual = residual - (z / bg**p)
             a__.append(a_ijp)
         r.append(a__)
-    u = [] * (k + 1)
-    for i in range(k + 1):
+    u = [] * (crypto_params.LWE_DIMENSION + 1)
+    for i in range(crypto_params.LWE_DIMENSION + 1):
         u.append([])
-        for p in range(l):
+        for p in range(level_count):
             f = []
-            for j in range(N):
+            for j in range(crypto_params.POLYNOMIAL_DEGREE):
                 f.append(r[i][j][p])
             u[i].append(f)
     return u
 
 
-def norm(m, l):
+def norm(m, level_count):
     r = []
-    for i in range(k + 1):
+    for i in range(crypto_params.LWE_DIMENSION + 1):
         z = []
-        for p in range(l):
+        for p in range(level_count):
             z.append(np.linalg.vector_norm(m[i][p]))
         r.append(z)
     print(z)
 
 
-def H(l, bg):
-    l_ = (k + 1) * l
-    h = np.zeros(shape=(l_, k + 1))
-    for i in range(k + 1):
-        for j in range(l):
-            h[i * l + j][i] = 1 / bg**j
+def H(level_count, bg):
+    lwe_dim = crypto_params.LWE_DIMENSION
+    l_ = (lwe_dim + 1) * level_count
+    h = np.zeros(shape=(l_, lwe_dim + 1))
+    for i in range(lwe_dim + 1):
+        for j in range(level_count):
+            h[i * level_count + j][i] = 1 / bg**j
     return h
 
 
-def tgsw(m, l, H):
-    l_ = (k + 1) * l
+def tgsw(m, level_count, H):
+    lwe_dim = crypto_params.LWE_DIMENSION
+    l_ = (lwe_dim + 1) * level_count
 
     tgsw_s = []
     tlwe_s = []  # (k+1)*l, k+1
-    H_m = H * m  # (k+1)*l, k+1
+    # H_m = H * m  # (k+1)*l, k+1 - Comentado - não utilizado
 
     for i in range(l_):
         tlwe_s.append(tlwe(secret))
-        sum = sum_tlwe(tlwe_s[:-1], H_m[i])
+        # sum_result = sum_tlwe(tlwe_s[:-1], H_m[i])  # Comentado - não utilizado
         # tgsw_s.append(sum_tlwe(tlwe_s[i], H_m[i]))
         tgsw_s.append(tlwe_s[i])
 
@@ -136,19 +154,21 @@ def tgsw(m, l, H):
     return tgsw_s
 
 
-def phase_tgsw(tgsw_s, secret, l):
+def phase_tgsw(tgsw_s, secret, level_count):
+    lwe_dim = crypto_params.LWE_DIMENSION
     msg = []
-    for i in range((k + 1) * l):
+    for i in range((lwe_dim + 1) * level_count):
         msg.append(phase_s(tgsw_s[i], secret))
     return msg
 
 
-# # 35094913 35094911 35094700 35094900 36021438
-# a = tlwe(secret)
-# # print("tlwe :", phase_s(a, secret))
+# Configuração de exemplo
+level_count = 4
 
-l = 4
-# print(H(l, 2))
-# s = tgsw(0, l, H(l, 2))  # Comentado para evitar erro durante import
-# print(phase_tgsw(s, secret, l))
-# #dec = decompose(a, 2, l)
+if __name__ == "__main__":
+    # Demonstração de uso
+    crypto_params.print_parameters_summary()
+
+    # Exemplo de uso comentado para evitar erro durante import
+    # s = tgsw(0, level_count, H(level_count, 2))
+    # print(phase_tgsw(s, secret, level_count))

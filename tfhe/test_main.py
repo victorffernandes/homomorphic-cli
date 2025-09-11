@@ -1,11 +1,6 @@
-from tfhe_main import k, N, alpha, secret
+from .tfhe_main import k, N, alpha, secret
 import pytest
 import numpy as np
-import sys
-import os
-
-# Adiciona o diretório atual ao path para importar main.py
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import deve vir depois da configuração do path
 

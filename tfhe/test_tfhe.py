@@ -1,3 +1,4 @@
+from .constants import TFHECryptographicParameters
 import pytest
 import numpy as np
 import sys
@@ -7,7 +8,11 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Import deve vir depois da configuração do path
-from tfhe_main import trivial_tlwe, phase_s, k, N, secret
+try:
+    from .tfhe_main import trivial_tlwe, phase_s, secret
+except ImportError as e:
+    print(f"Erro ao importar módulos TFHE: {e}")
+    raise
 
 
 class TestTFHEExample:
@@ -15,6 +20,9 @@ class TestTFHEExample:
 
     def test_trivial_tlwe_example(self):
         """Teste de exemplo: cria TLWE trivial e verifica a fase"""
+        # Instância dos parâmetros criptográficos
+        crypto_params = TFHECryptographicParameters()
+
         # Mensagem de teste
         message = 0.5
 
@@ -22,7 +30,11 @@ class TestTFHEExample:
         tlwe_sample = trivial_tlwe(message)
 
         # Verifica estrutura básica
-        assert tlwe_sample.shape == (k + 1, N)
+        expected_shape = (
+            crypto_params.LWE_DIMENSION + 1,
+            crypto_params.POLYNOMIAL_DEGREE,
+        )
+        assert tlwe_sample.shape == expected_shape
 
         # Computa a fase (descriptografia)
         phase = phase_s(tlwe_sample, secret)

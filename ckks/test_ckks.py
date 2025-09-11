@@ -1,14 +1,8 @@
+from ckks_main import ckks_encode_real, ckks_decode_real
+from .constants import CKKSCryptographicParameters
 import pytest
 import numpy as np
 from numpy.polynomial import Polynomial
-import sys
-import os
-
-# Adiciona o diretório atual ao path para importar main.py
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# Import deve vir depois da configuração do path
-from ckks_main import ckks_encode_real, ckks_decode_real, DELTA, N, Q_CHAIN
 
 
 class TestCKKSExample:
@@ -16,18 +10,29 @@ class TestCKKSExample:
 
     def test_encode_decode_example(self):
         """Teste de exemplo: codifica e decodifica um vetor real"""
+        # Instância dos parâmetros criptográficos
+        crypto_params = CKKSCryptographicParameters()
+
         # Vetor de teste simples
-        test_vector = np.array([0.5, -0.6, 0.7, 0.8] + [0] * ((N // 2) - 4))
+        max_slots = crypto_params.get_maximum_plaintext_slots()
+        test_vector = np.array([0.5, -0.6, 0.7, 0.8] + [0] * (max_slots - 4))
 
         # Codifica o vetor em um polinômio
-        encoded_poly = ckks_encode_real(test_vector, DELTA, N)
+        encoded_poly = ckks_encode_real(
+            test_vector, crypto_params.SCALING_FACTOR, crypto_params.POLYNOMIAL_DEGREE
+        )
 
         # Verifica que o polinômio foi criado
         assert isinstance(encoded_poly, Polynomial)
         assert len(encoded_poly.coef) > 0
 
         # Decodifica o polinômio de volta para vetor
-        decoded_vector = ckks_decode_real(encoded_poly, DELTA, N, Q_CHAIN[-1])
+        decoded_vector = ckks_decode_real(
+            encoded_poly,
+            crypto_params.SCALING_FACTOR,
+            crypto_params.POLYNOMIAL_DEGREE,
+            crypto_params.get_initial_modulus(),
+        )
 
         # Verifica propriedades básicas
         assert isinstance(decoded_vector, np.ndarray)
