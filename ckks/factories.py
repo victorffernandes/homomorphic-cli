@@ -184,14 +184,44 @@ class CKKSCiphertextFactory:
         q_mod = self.crypto_params.MODULUS_CHAIN[level]
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
 
-        c0 = ciphertext.get_component(0)
-        c1 = ciphertext.get_component(1)
+        if ciphertext.size == 2:
+            # Descriptografia padrão para ciphertext de 2 componentes: m = c0 + c1*s
+            c0 = ciphertext.get_component(0)
+            c1 = ciphertext.get_component(1)
 
-        # Calcula c1 * s
-        c1_s = self.crypto_params.poly_mul_mod(c1, secret_key, q_mod, ring_poly_mod)
+            # Calcula c1 * s
+            c1_s = self.crypto_params.poly_mul_mod(c1, secret_key, q_mod, ring_poly_mod)
 
-        # Descriptografa: c0 + c1*s
-        decrypted_poly = c0 + c1_s
+            # Descriptografa: c0 + c1*s
+            decrypted_poly = c0 + c1_s
+
+        elif ciphertext.size == 3:
+            # Descriptografia para ciphertext de 3 componentes seguindo a fórmula CKKS:
+            # Fórmula: C'₁ + s·C'₂ + s²·C'₃
+            # Aplicar poly_mul_mod apenas no final
+
+            c0 = ciphertext.get_component(0)  # C'₁
+            c1 = ciphertext.get_component(1)  # C'₂
+            c2 = ciphertext.get_component(2)  # C'₃
+
+            # Calcular s² (multiplicação simples, sem redução modular ainda)
+            s_squared = self.crypto_params.poly_mul(secret_key, secret_key)
+
+            # Calcular cada termo sem redução modular intermediária:
+            # Termo 1: C'₁ (já está correto)
+            # Termo 2: s · C'₂
+            term2 = self.crypto_params.poly_mul(secret_key, c1)
+
+            # Termo 3: s² · C'₃
+            term3 = self.crypto_params.poly_mul(s_squared, c2)
+
+            # Soma final: C'₁ + s·C'₂ + s²·C'₃
+            decrypted_poly = c0 + term2 + term3
+
+        else:
+            raise ValueError(
+                f"Descriptografia não suportada para ciphertext com {ciphertext.size} componentes"
+            )
 
         # Aplica redução modular final
         final_poly = self.crypto_params.poly_ring_mod(
@@ -375,6 +405,73 @@ class CKKSKeyFactory:
 
         return (rlk_b_final, rlk_a)
 
+    def generate_evaluation_key(
+        self, secret_key: Polynomial, level: int = None, P: int = None
+    ) -> Tuple[Polynomial, Polynomial]:
+        """
+        Gera uma Evaluation Key (EVK) para reduzir ciphertexts de 3 para 2 componentes.
+
+        Fórmula: EVK = (EVK1, EVK2) = ([-(a·s + e) + P·s²]_{P·q}, a)
+        onde P é um parâmetro inteiro (aproximadamente do tamanho de q para baixo ruído),
+        a é um polinômio aleatório em R_{P·q}, e e é um polinômio pequeno aleatório.
+
+        Args:
+            secret_key: Chave secreta para derivar a evaluation key
+            level: Nível na cadeia de módulos (usa o maior se None)
+            P: Parâmetro P (usa q/1000 se None para evitar overflow)
+
+        Returns:
+            Tuple[Polynomial, Polynomial]: Tupla (evk1, evk2) da evaluation key
+        """
+        if level is None:
+            level = len(self.crypto_params.MODULUS_CHAIN) - 1
+
+        n_degree = self.crypto_params.POLYNOMIAL_DEGREE
+        ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
+        q_mod = self.crypto_params.MODULUS_CHAIN[level]
+        sigma_err = self.crypto_params.GAUSSIAN_NOISE_STDDEV
+
+        # P deve ser menor para evitar overflow, mas ainda grande o suficiente
+        if P is None:
+            P = max(
+                1000, min(q_mod // 100, 10000)
+            )  # P muito menor para evitar problemas
+
+        # Verificar se P*q não causa overflow em int64
+        pq_mod = P * q_mod
+        max_int64 = 2**63 - 1
+        if pq_mod > max_int64:
+            # Ajustar P para não causar overflow
+            P = max_int64 // q_mod
+            pq_mod = P * q_mod
+            print(f"Aviso: P ajustado para {P} para evitar overflow")
+
+        # Calcular s² (secret_key ao quadrado)
+        s_squared = self.crypto_params.poly_mul_mod(
+            secret_key, secret_key, pq_mod, ring_poly_mod
+        )
+
+        # Calcular P·s²
+        p_s_squared = (P * s_squared) % ring_poly_mod
+
+        # Gerar componente aleatório a em R_{P·q}
+        evk_a = self.crypto_params.generate_uniform_random_poly(n_degree, pq_mod)
+
+        # Gerar erro gaussiano pequeno
+        e_err = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
+
+        # Calcular evk1 = [-(a·s + e) + P·s²]_{P·q}
+        # Primeiro calcula a·s
+        a_s = self.crypto_params.poly_mul_mod(evk_a, secret_key, pq_mod, ring_poly_mod)
+
+        # Depois calcula -(a·s + e) + P·s²
+        evk1 = (-a_s - e_err + p_s_squared) % ring_poly_mod
+
+        # Aplica redução modular final
+        evk1_final = self.crypto_params.poly_ring_mod(evk1, ring_poly_mod, pq_mod)
+
+        return (evk1_final, evk_a)
+
     def generate_keypair(
         self, level: int = None
     ) -> Tuple[Polynomial, Tuple[Polynomial, Polynomial]]:
@@ -405,15 +502,18 @@ class CKKSKeyFactory:
                 - 'secret_key': Chave secreta
                 - 'public_key': Chave pública (pk_b, pk_a)
                 - 'relinearization_key': Chave de relinearização (rlk_b, rlk_a)
+                - 'evaluation_key': Chave de avaliação (evk1, evk2)
         """
         secret_key = self.generate_secret_key()
         public_key = self.generate_public_key(secret_key, level)
         relinearization_key = self.generate_relinearization_key(secret_key, level)
+        evaluation_key = self.generate_evaluation_key(secret_key, level)
 
         return {
             "secret_key": secret_key,
             "public_key": public_key,
             "relinearization_key": relinearization_key,
+            "evaluation_key": evaluation_key,
         }
 
     def validate_keypair(

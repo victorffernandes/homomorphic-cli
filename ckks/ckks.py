@@ -309,6 +309,302 @@ class CKKSCiphertext:
             crypto_params=crypto_params,
         )
 
+    @staticmethod
+    def rescale(ct: "CKKSCiphertext", target_level: int = None) -> "CKKSCiphertext":
+        """
+        Realiza operação de rescale conforme definição do paper CKKS.
+
+        RS_{ℓ→ℓ'}(c): Para um ciphertext c ∈ R_q^k no nível ℓ e nível inferior ℓ' < ℓ,
+        produz c' ← ⌊(q_{ℓ'}/q_ℓ) * c⌉ em R_{q_{ℓ'}}^k.
+
+        Args:
+            ct: Ciphertext CKKS para rescalonar
+            target_level: Nível alvo (usa level-1 se None)
+
+        Returns:
+            CKKSCiphertext: Novo ciphertext rescalonado
+
+        Raises:
+            ValueError: Se não há mais níveis para rescalonar
+        """
+        if ct.level == 0:
+            raise ValueError("Não há mais níveis para rescalonar.")
+
+        # Determina o nível alvo
+        if target_level is None:
+            target_level = ct.level - 1
+
+        if target_level < 0 or target_level >= ct.level:
+            raise ValueError(f"Nível alvo inválido: {target_level}")
+
+        # Obter módulos
+        q_current = ct.crypto_params.MODULUS_CHAIN[ct.level]  # q_ℓ
+        q_target = ct.crypto_params.MODULUS_CHAIN[target_level]  # q_ℓ'
+        ring_poly_mod = ct.crypto_params.get_polynomial_modulus_ring()
+
+        # Calcular fator de escala: q_{ℓ'}/q_ℓ
+        scale_factor = q_target / q_current
+
+        # Rescalonar cada componente: c' ← ⌊(q_{ℓ'}/q_ℓ) * c⌉
+        rescaled_components = []
+        for comp in ct.components:
+            # Converter para float64 para cálculo preciso
+            coeffs = comp.coef.astype(np.float64)
+
+            # Aplicar escala: (q_{ℓ'}/q_ℓ) * c
+            scaled_coeffs = coeffs * scale_factor
+
+            # Arredondar para inteiros mais próximos: ⌊·⌉
+            rounded_coeffs = np.round(scaled_coeffs).astype(np.int64)
+
+            # Criar polinômio e aplicar redução mod q_{ℓ'}
+            comp_rescaled = Polynomial(rounded_coeffs)
+            comp_mod = ct.crypto_params.poly_ring_mod(
+                comp_rescaled, ring_poly_mod, q_target
+            )
+            rescaled_components.append(comp_mod)
+
+        # Ajustar escala: como aplicamos fator q_{ℓ'}/q_ℓ,
+        # a nova escala é escala_antiga * (q_{ℓ'}/q_ℓ)
+        new_scale = ct.scale * scale_factor
+
+        return CKKSCiphertext(
+            components=rescaled_components,
+            level=target_level,
+            scale=new_scale,
+            crypto_params=ct.crypto_params,
+        )
+
+    @staticmethod
+    def raw_multiply_homomorphic(
+        ct1: "CKKSCiphertext", ct2: "CKKSCiphertext"
+    ) -> "CKKSCiphertext":
+        """
+        Realiza multiplicação homomórfica raw conforme definição do paper CKKS.
+
+        Para c1 = (b1, a1), c2 = (b2, a2) ∈ R²_{q_ℓ}, calcula:
+        (d0, d1, d2) = (b1*b2, a1*b2 + a2*b1, a1*a2) (mod q_ℓ)
+
+        Args:
+            ct1: Primeiro ciphertext CKKS (deve ter exatamente 2 componentes)
+            ct2: Segundo ciphertext CKKS (deve ter exatamente 2 componentes)
+
+        Returns:
+            CKKSCiphertext: Ciphertext resultante com 3 componentes
+
+        Raises:
+            ValueError: Se os ciphertexts não são compatíveis para multiplicação
+        """
+        # Validação de compatibilidade
+        if not ct1.can_multiply_with(ct2):
+            raise ValueError(
+                f"Ciphertexts não são compatíveis para multiplicação. "
+                f"ct1: level={ct1.level}, size={ct1.size}; "
+                f"ct2: level={ct2.level}, size={ct2.size}"
+            )
+
+        if ct1.size != 2 or ct2.size != 2:
+            raise ValueError(
+                f"raw_multiply_homomorphic requer ciphertexts com exatamente 2 componentes. "
+                f"ct1.size={ct1.size}, ct2.size={ct2.size}"
+            )
+
+        # Obter parâmetros
+        level = ct1.level
+        crypto_params = ct1.crypto_params
+
+        # Extrair componentes: c1 = (b1, a1), c2 = (b2, a2)
+        b1 = ct1.components[0]  # c0 do primeiro ciphertext
+        a1 = ct1.components[1]  # c1 do primeiro ciphertext
+        b2 = ct2.components[0]  # c0 do segundo ciphertext
+        a2 = ct2.components[1]  # c1 do segundo ciphertext
+
+        # Calcular multiplicação conforme paper CKKS:
+        # d0 = b1 * b2 (mod q_ℓ)
+        d0 = crypto_params.poly_mul(b1, b2)
+
+        # d1 = a1 * b2 + a2 * b1 (mod q_ℓ)
+        a1_b2 = crypto_params.poly_mul(a1, b2)
+        a2_b1 = crypto_params.poly_mul(a2, b1)
+        d1 = a1_b2 + a2_b1
+
+        # d2 = a1 * a2 (mod q_ℓ)
+        d2 = crypto_params.poly_mul(a1, a2)
+
+        # Nova escala é o produto das escalas originais
+        new_scale = ct1.scale * ct2.scale
+
+        return CKKSCiphertext(
+            components=[d0, d1, d2],
+            level=level,
+            scale=new_scale,
+            crypto_params=crypto_params,
+        )
+
+    @staticmethod
+    def relinearize(
+        ciphertext: "CKKSCiphertext", evaluation_key: tuple
+    ) -> "CKKSCiphertext":
+        """
+        Relineariza um ciphertext de 3 componentes para 2 componentes usando a Evaluation Key.
+
+        A relinearização reduz o tamanho do ciphertext de (d0, d1, d2) para (c0', c1')
+        usando a fórmula: (c0', c1') = (d0, d1) + d2 * EVK
+
+        onde EVK = (evk0, evk1) é a Evaluation Key.
+
+        Args:
+            ciphertext: Ciphertext de 3 componentes para relinearizar
+            evaluation_key: Tupla (evk0, evk1) da Evaluation Key
+
+        Returns:
+            CKKSCiphertext: Novo ciphertext com 2 componentes
+
+        Raises:
+            ValueError: Se o ciphertext não tiver exatamente 3 componentes
+        """
+        if ciphertext.size != 3:
+            raise ValueError(
+                f"Relinearização requer ciphertext com exatamente 3 componentes. "
+                f"Recebido: {ciphertext.size} componentes"
+            )
+
+        if len(evaluation_key) != 2:
+            raise ValueError(
+                f"Evaluation Key deve ter exatamente 2 componentes. "
+                f"Recebido: {len(evaluation_key)} componentes"
+            )
+
+        # Extrair componentes do ciphertext
+        d0 = ciphertext.components[0]  # Termo constante
+        d1 = ciphertext.components[1]  # Termo linear
+        d2 = ciphertext.components[2]  # Termo quadrático
+
+        # Extrair componentes da Evaluation Key
+        evk0, evk1 = evaluation_key
+
+        # Obter parâmetros criptográficos
+        crypto_params = ciphertext.crypto_params
+        level = ciphertext.level
+        q_mod = crypto_params.MODULUS_CHAIN[level]
+        ring_poly_mod = crypto_params.get_polynomial_modulus_ring()
+
+        # Calcular d2 * EVK = d2 * (evk0, evk1) = (d2*evk0, d2*evk1)
+        d2_evk0 = crypto_params.poly_mul_mod(d2, evk0, q_mod, ring_poly_mod)
+        d2_evk1 = crypto_params.poly_mul_mod(d2, evk1, q_mod, ring_poly_mod)
+
+        # Calcular (c0', c1') = (d0, d1) + (d2*evk0, d2*evk1)
+        c0_prime = (d0 + d2_evk0) % ring_poly_mod
+        c1_prime = (d1 + d2_evk1) % ring_poly_mod
+
+        # Aplicar redução modular
+        c0_final = crypto_params.poly_ring_mod(c0_prime, ring_poly_mod, q_mod)
+        c1_final = crypto_params.poly_ring_mod(c1_prime, ring_poly_mod, q_mod)
+
+        # Retornar novo ciphertext com 2 componentes
+        return CKKSCiphertext(
+            components=[c0_final, c1_final],
+            level=level,
+            scale=ciphertext.scale,  # Mantém a mesma escala
+            crypto_params=crypto_params,
+        )
+
+    @staticmethod
+    def multiply_homomorphic(
+        ct1: "CKKSCiphertext",
+        ct2: "CKKSCiphertext",
+        evaluation_key: tuple,
+        auto_rescale: bool = True,
+    ) -> "CKKSCiphertext":
+        """
+        Multiplica dois ciphertexts homomorficamente seguindo o paper CKKS.
+
+        Processo completo conforme CKKS paper:
+        1. Multiplicação raw (resulta em 3 componentes)
+        2. Relinearização usando EVK (reduz para 2 componentes)
+        3. Rescale (reduz nível e normaliza escala)
+
+        Args:
+            ct1: Primeiro ciphertext (deve ter 2 componentes)
+            ct2: Segundo ciphertext (deve ter 2 componentes)
+            evaluation_key: Tupla (evk0, evk1) da Evaluation Key
+            auto_rescale: Se True, aplica rescale automático após multiplicação
+
+        Returns:
+            CKKSCiphertext: Resultado da multiplicação completa
+
+        Raises:
+            ValueError: Se os ciphertexts não forem compatíveis ou EVK inválida
+        """
+        # Validações de entrada
+        if ct1.size != 2:
+            raise ValueError(
+                f"ct1 deve ter exatamente 2 componentes. Recebido: {ct1.size}"
+            )
+
+        if ct2.size != 2:
+            raise ValueError(
+                f"ct2 deve ter exatamente 2 componentes. Recebido: {ct2.size}"
+            )
+
+        if len(evaluation_key) != 2:
+            raise ValueError(
+                f"Evaluation Key deve ter exatamente 2 componentes. "
+                f"Recebido: {len(evaluation_key)}"
+            )
+
+        # Verificar compatibilidade dos ciphertexts
+        if ct1.level != ct2.level:
+            raise ValueError(
+                f"Ciphertexts devem estar no mesmo nível. "
+                f"ct1: level={ct1.level}, ct2: level={ct2.level}"
+            )
+
+        if ct1.crypto_params != ct2.crypto_params:
+            raise ValueError(
+                "Ciphertexts devem usar os mesmos parâmetros criptográficos"
+            )
+
+        # Verificar se há nível suficiente para rescale
+        if auto_rescale and ct1.level == 0:
+            raise ValueError(
+                "Não há níveis suficientes para rescale após multiplicação"
+            )
+
+        # Etapa 1: Multiplicação raw (2 componentes → 3 componentes)
+        ct_mult_raw = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
+
+        # Etapa 2: Relinearização (3 componentes → 2 componentes)
+        ct_relin = CKKSCiphertext.relinearize(ct_mult_raw, evaluation_key)
+
+        # Etapa 3: Rescale (conforme paper CKKS)
+        if auto_rescale:
+            ct_result = CKKSCiphertext.rescale(ct_relin)
+        else:
+            ct_result = ct_relin
+
+        return ct_result
+
+    @staticmethod
+    def multiply_homomorphic_without_relin(
+        ct1: "CKKSCiphertext", ct2: "CKKSCiphertext"
+    ) -> "CKKSCiphertext":
+        """
+        Multiplica dois ciphertexts homomorficamente sem relinearização.
+
+        Este é um alias conveniente para raw_multiply_homomorphic,
+        fornecendo uma interface mais clara quando a relinearização
+        não é desejada imediatamente.
+
+        Args:
+            ct1: Primeiro ciphertext (deve ter 2 componentes)
+            ct2: Segundo ciphertext (deve ter 2 componentes)
+
+        Returns:
+            CKKSCiphertext: Resultado da multiplicação (3 componentes)
+        """
+        return CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
+
 
 # Funções de conveniência para compatibilidade com código existente
 def create_ciphertext_from_dict(data: dict) -> CKKSCiphertext:

@@ -194,6 +194,27 @@ class CKKSCryptographicParameters:
         return cls.poly_ring_mod(full_poly, ring_poly_mod, q)
 
     @classmethod
+    def poly_mul(cls, p1, p2):
+        """
+        Multiplicação de polinômios.
+
+        Args:
+            p1: Primeiro polinômio
+            p2: Segundo polinômio
+
+        Returns:
+            Polynomial: Resultado da multiplicação
+        """
+        coeffs1 = [int(c) for c in p1.coef]
+        coeffs2 = [int(c) for c in p2.coef]
+        prod_coeffs = [0] * (len(coeffs1) + len(coeffs2) - 1)
+        for i in range(len(coeffs1)):
+            for j in range(len(coeffs2)):
+                prod_coeffs[i + j] += coeffs1[i] * coeffs2[j]
+        full_poly = Polynomial(prod_coeffs)
+        return full_poly
+
+    @classmethod
     def generate_gaussian_poly(cls, degree_n=None, sigma_val=None):
         """
         Gera um polinômio com coeficientes gaussianos.

@@ -1,6 +1,5 @@
 import numpy as np
 from .ckks import CKKSCiphertext
-from numpy.polynomial import Polynomial
 from .constants import CKKSCryptographicParameters
 from .factories import CKKSCiphertextFactory, CKKSKeyFactory
 
@@ -32,7 +31,7 @@ def log_poly(name, poly, q_mod=None):
 # --- Funções de Operações Homomórficas ---
 
 
-def multiply_homomorphic_step1(ct1, ct2, ring_poly_mod, q_chain):
+def raw_multiply_homomorphic(ct1, ct2, ring_poly_mod, q_chain):
     level = ct1["level"]
     q_mod = q_chain[level]
     d0 = crypto_params.poly_mul_mod(ct1["c0"], ct2["c0"], q_mod, ring_poly_mod)
@@ -61,42 +60,6 @@ def relinearize(ct_3part, rlk, ring_poly_mod, q_chain):
         "c1": crypto_params.poly_ring_mod(c1_new, ring_poly_mod, q_mod),
         "level": level,
         "scale": ct_3part["scale"],
-    }
-
-
-def rescale(ct, ring_poly_mod, q_chain, delta_scale):
-    level = ct["level"]
-    if level == 0:
-        raise ValueError("Não há mais níveis para rescalonar.")
-
-    q_next = q_chain[level - 1]
-
-    # LOGS ADICIONADOS AQUI PARA VER A DESTRUIÇÃO DOS DADOS
-    c0_coeffs_obj = ct["c0"].coef
-    c0_coeffs_numeric = c0_coeffs_obj.astype(np.float64)
-    print("\n--- LOG: DENTRO DO RESCALE (para c0) ---")
-    print(f"    Coefs ANTES da divisão: {c0_coeffs_numeric[:8]}")
-    c0_divided = c0_coeffs_numeric / delta_scale
-    print(f"    Coefs DEPOIS da divisão por DELTA: {c0_divided[:8]}")
-    c0_rounded = np.round(c0_divided)
-    print(f"    Coefs DEPOIS do round: {c0_rounded[:8]}")
-    print("-" * 20)
-
-    c0_rescaled_coeffs = c0_rounded.astype(np.int64)
-
-    c1_coeffs_numeric = ct["c1"].coef.astype(np.float64)
-    c1_rescaled_coeffs = np.round(c1_coeffs_numeric / delta_scale).astype(np.int64)
-
-    c0_rescaled = Polynomial(c0_rescaled_coeffs)
-    c1_rescaled = Polynomial(c1_rescaled_coeffs)
-
-    new_scale = ct["scale"] / delta_scale
-
-    return {
-        "c0": crypto_params.poly_ring_mod(c0_rescaled, ring_poly_mod, q_next),
-        "c1": crypto_params.poly_ring_mod(c1_rescaled, ring_poly_mod, q_next),
-        "level": level - 1,
-        "scale": new_scale,
     }
 
 
@@ -151,7 +114,7 @@ if __name__ == "__main__":
     ct1 = ct1_obj.to_dict()
     ct2 = ct2_obj.to_dict()
 
-    ct_mult_3part = multiply_homomorphic_step1(ct1, ct2, poly_mod_ring, modulus_chain)
+    ct_mult_3part = raw_multiply_homomorphic(ct1, ct2, poly_mod_ring, modulus_chain)
     ct_mult_relin = relinearize(ct_mult_3part, rlk, poly_mod_ring, modulus_chain)
 
     # --- DIAGNÓSTICO INTERMEDIÁRIO ---
@@ -179,14 +142,12 @@ if __name__ == "__main__":
     print("--- FIM DO DIAGNÓSTICO ---\n\n")
 
     # --- CONTINUAÇÃO DO FLUXO NORMAL ---
-    ct_mult_final = rescale(
-        ct_mult_relin, poly_mod_ring, modulus_chain, crypto_params.SCALING_FACTOR
-    )
+    ct_mult_relin_obj = CKKSCiphertext.from_dict(ct_mult_relin, crypto_params)
+    ct_mult_final_obj = CKKSCiphertext.rescale(ct_mult_relin_obj)
 
-    print(f"Escala final é {ct_mult_final['scale']:.4f}")
-    print(f"Nível final do texto cifrado: {ct_mult_final['level']}")
+    print(f"Escala final é {ct_mult_final_obj.scale:.4f}")
+    print(f"Nível final do texto cifrado: {ct_mult_final_obj.level}")
 
-    ct_mult_final_obj = CKKSCiphertext.from_dict(ct_mult_final, crypto_params)
     decoded_mult_vector = ciphertext_factory.decrypt_and_decode(
         ct_mult_final_obj, sk, len(m1)
     )
