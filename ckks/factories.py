@@ -395,10 +395,10 @@ class CKKSKeyFactory:
         e_err = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
 
         # Calcula rlk_b = -(rlk_a * secret_key) + e_err + secret_key^2
-        neg_a_s = -self.crypto_params.poly_mul_mod(
+        neg_a_s = self.crypto_params.poly_mul_mod(
             rlk_a, secret_key, q_mod, ring_poly_mod
         )
-        rlk_b = (neg_a_s + e_err + sk_s_squared) % ring_poly_mod
+        rlk_b = (-(neg_a_s + e_err) + sk_s_squared) % ring_poly_mod
 
         # Aplica redução modular
         rlk_b_final = self.crypto_params.poly_ring_mod(rlk_b, ring_poly_mod, q_mod)

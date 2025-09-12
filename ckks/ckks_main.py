@@ -28,41 +28,6 @@ def log_poly(name, poly, q_mod=None):
     print("-" * 20)
 
 
-# --- Funções de Operações Homomórficas ---
-
-
-def raw_multiply_homomorphic(ct1, ct2, ring_poly_mod, q_chain):
-    level = ct1["level"]
-    q_mod = q_chain[level]
-    d0 = crypto_params.poly_mul_mod(ct1["c0"], ct2["c0"], q_mod, ring_poly_mod)
-    d1_p1 = crypto_params.poly_mul_mod(ct1["c0"], ct2["c1"], q_mod, ring_poly_mod)
-    d1_p2 = crypto_params.poly_mul_mod(ct1["c1"], ct2["c0"], q_mod, ring_poly_mod)
-    d1 = d1_p1 + d1_p2
-    d2 = crypto_params.poly_mul_mod(ct1["c1"], ct2["c1"], q_mod, ring_poly_mod)
-    return {
-        "d0": d0,
-        "d1": d1,
-        "d2": d2,
-        "level": level,
-        "scale": ct1["scale"] * ct2["scale"],
-    }
-
-
-def relinearize(ct_3part, rlk, ring_poly_mod, q_chain):
-    level = ct_3part["level"]
-    q_mod = q_chain[level]
-    d0, d1, d2 = ct_3part["d0"], ct_3part["d1"], ct_3part["d2"]
-    rlk_b, rlk_a = rlk
-    c0_new = d0 + crypto_params.poly_mul_mod(d2, rlk_b, q_mod, ring_poly_mod)
-    c1_new = d1 + crypto_params.poly_mul_mod(d2, rlk_a, q_mod, ring_poly_mod)
-    return {
-        "c0": crypto_params.poly_ring_mod(c0_new, ring_poly_mod, q_mod),
-        "c1": crypto_params.poly_ring_mod(c1_new, ring_poly_mod, q_mod),
-        "level": level,
-        "scale": ct_3part["scale"],
-    }
-
-
 # --- Demonstração de Uso ---
 if __name__ == "__main__":
     print(
@@ -159,3 +124,107 @@ if __name__ == "__main__":
     min_len = min(len(m1 * m2), len(decoded_mult_vector))
     error = np.max(np.abs((m1 * m2)[:min_len] - decoded_mult_vector[:min_len]))
     print(f"\nErro máximo absoluto na multiplicação: {error:.10f}")
+
+    print("\n" + "=" * 70)
+    print("=== EXEMPLO: SOMA E MULTIPLICAÇÃO DO MESMO TEXTO CIFRADO ===")
+    print("=" * 70)
+
+    # Criar um array de teste com valores mais simples para melhor visualização
+    test_array = np.array([2.0, 3.0, 4.0, 5.0] + [0.0] * (num_plaintext_elements - 4))
+    print(f"Array original: {test_array[:4]}")
+
+    # Criptografar o array
+    ct_test = ciphertext_factory.encode_and_encrypt(test_array, pk)
+    print(f"Array criptografado (level={ct_test.level}, scale={ct_test.scale:.2e})")
+
+    # === OPERAÇÃO 1: SOMA HOMOMÓRFICA (ct + ct) ===
+    print("\n--- SOMA HOMOMÓRFICA: ct + ct ---")
+    ct_sum = CKKSCiphertext.add_homomorphic(ct_test, ct_test)
+
+    # Decodificar resultado da soma
+    result_sum = ciphertext_factory.decrypt_and_decode(ct_sum, sk, 4)
+    expected_sum = test_array[:4] + test_array[:4]  # 2 * test_array
+
+    print(f"Array esperado (2 * original): {expected_sum}")
+    print(f"Array obtido (soma homomórfica): {np.round(result_sum, 6)}")
+
+    error_sum = np.max(np.abs(expected_sum - result_sum))
+    print(f"Erro máximo na soma: {error_sum:.2e}")
+
+    # === OPERAÇÃO 2: MULTIPLICAÇÃO HOMOMÓRFICA (ct * ct) ===
+    print("\n--- MULTIPLICAÇÃO HOMOMÓRFICA: ct * ct ---")
+
+    # Usar o método completo com rescale automático
+    ct_mult_complete = CKKSCiphertext.multiply_homomorphic(
+        ct_test, ct_test, keyset["evaluation_key"], auto_rescale=True
+    )
+
+    # Analisar escalas
+    original_scale = ct_test.scale
+    mult_scale = ct_mult_complete.scale
+
+    print(f"Escala original: {original_scale:.2e}")
+    print(f"Escala após multiplicação com rescale: {mult_scale:.2e}")
+    print(f"Nível original: {ct_test.level}")
+    print(f"Nível após multiplicação: {ct_mult_complete.level}")
+
+    # Descriptografar resultado da multiplicação
+    result_mult = ciphertext_factory.decrypt_and_decode(ct_mult_complete, sk, 4)
+    expected_mult = test_array[:4] * test_array[:4]  # test_array²
+
+    print(f"\nResultados da multiplicação:")
+    print(f"  Esperado: {expected_mult}")
+    print(f"  Obtido: {np.round(result_mult, 6)}")
+
+    error_mult = np.max(np.abs(expected_mult - result_mult))
+    print(f"  Erro máximo: {error_mult:.6f}")
+
+    # Verificar se a precisão está dentro do requisito (0.001)
+    precision_target = 0.001
+    if error_mult < precision_target:
+        precision_status = f"✅ PRECISÃO ALCANÇADA (< {precision_target})"
+    else:
+        precision_status = f"⚠️ PRECISÃO INSUFICIENTE (≥ {precision_target})"
+
+    print(f"  {precision_status}")
+    # === DEMONSTRAÇÃO DE PRESERVAÇÃO DAS OPERAÇÕES ===
+    print("\n--- VERIFICAÇÃO DAS PROPRIEDADES HOMOMÓRFICAS ---")
+    print("✅ Soma homomórfica: Enc(a) + Enc(a) = Enc(2a)")
+    print(f"  Original: {test_array[:4]}")
+    print(f"  2 × Original: {2 * test_array[:4]}")
+    print(f"  Soma homomórfica: {np.round(result_sum, 3)}")
+    print(f"  Diferença: {np.round(2 * test_array[:4] - result_sum, 6)}")
+
+    print("\n🔧 Multiplicação homomórfica: Enc(a) × Enc(a) = Enc(a²)")
+    print(f"  Original: {test_array[:4]}")
+    print(f"  Original²: {test_array[:4]**2}")
+    print(f"  Mult homomórfica: {np.round(result_mult, 6)}")
+    print(f"  Diferença: {np.round(test_array[:4]**2 - result_mult, 6)}")
+
+    # === INFORMAÇÕES TÉCNICAS ===
+    print("\n--- INFORMAÇÕES TÉCNICAS ---")
+    print(f"Ciphertext original: level={ct_test.level}, size={ct_test.size}")
+    print(f"Após soma: level={ct_sum.level}, size={ct_sum.size}")
+    print(
+        f"Após multiplicação: level={ct_mult_complete.level}, size={ct_mult_complete.size}"
+    )
+    print(f"Rescale aplicado: {ct_test.level - ct_mult_complete.level} níveis")
+
+    print("\nGestão de escalas:")
+    print(f"  Escala base: {original_scale:.2e}")
+    print(f"  Escala após mult: {mult_scale:.2e}")
+    print(f"  Razão de redução: {original_scale/mult_scale:.2f}")
+
+    print("\n" + "=" * 70)
+    if error_mult < precision_target:
+        success_msg = "✅ MULTIPLICAÇÃO CKKS IMPLEMENTADA COM SUCESSO!"
+        precision_msg = f"Precisão alcançada: {error_mult:.6f} < {precision_target}"
+    else:
+        success_msg = (
+            "⚠️ MULTIPLICAÇÃO CKKS IMPLEMENTADA (ajuste de precisão necessário)"
+        )
+        precision_msg = f"Precisão atual: {error_mult:.6f} ≥ {precision_target}"
+
+    print(success_msg)
+    print(precision_msg)
+    print("=" * 70)

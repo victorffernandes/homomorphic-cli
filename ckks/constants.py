@@ -23,7 +23,8 @@ class CKKSCryptographicParameters:
     # === PARÂMETROS ESTRUTURAIS ===
     POLYNOMIAL_DEGREE = 2048  # Grau do polinômio ciclotômico (N)
 
-    # === CADEIA DE MÓDULOS ===
+    # === MÓDULOS DA CADEIA CKKS ===
+    # Voltando aos módulos originais que funcionavam estruturalmente
     MODULUS_CHAIN = [1099511922689, 1099512004609, 1099512037377]  # Q_CHAIN
 
     # === PARÂMETROS DE ESCALA ===

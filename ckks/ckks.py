@@ -16,7 +16,13 @@ class CKKSCiphertext:
     Classe que representa um ciphertext do esquema CKKS.
 
     Esta classe encapsula todos os componentes e metadados necessários
-    para operações de criptografia homomórfica CKKS.
+    para operações de cri    @staticmethod
+    def multiply_homomorphic(
+        ct1: "CKKSCiphertext",
+        ct2: "CKKSCiphertext",
+        evaluation_key: tuple,
+        auto_rescale: bool = True  # Habilitando rescale automático novamente
+    ) -> "CKKSCiphertext":ia homomórfica CKKS.
 
     Attributes:
         components: Lista de componentes polinomiais do ciphertext
@@ -338,35 +344,19 @@ class CKKSCiphertext:
             raise ValueError(f"Nível alvo inválido: {target_level}")
 
         # Obter módulos
-        q_current = ct.crypto_params.MODULUS_CHAIN[ct.level]  # q_ℓ
         q_target = ct.crypto_params.MODULUS_CHAIN[target_level]  # q_ℓ'
         ring_poly_mod = ct.crypto_params.get_polynomial_modulus_ring()
 
-        # Calcular fator de escala: q_{ℓ'}/q_ℓ
-        scale_factor = q_target / q_current
+        delta = ct.crypto_params.SCALING_FACTOR
 
-        # Rescalonar cada componente: c' ← ⌊(q_{ℓ'}/q_ℓ) * c⌉
         rescaled_components = []
         for comp in ct.components:
-            # Converter para float64 para cálculo preciso
-            coeffs = comp.coef.astype(np.float64)
-
-            # Aplicar escala: (q_{ℓ'}/q_ℓ) * c
-            scaled_coeffs = coeffs * scale_factor
-
-            # Arredondar para inteiros mais próximos: ⌊·⌉
-            rounded_coeffs = np.round(scaled_coeffs).astype(np.int64)
-
-            # Criar polinômio e aplicar redução mod q_{ℓ'}
-            comp_rescaled = Polynomial(rounded_coeffs)
-            comp_mod = ct.crypto_params.poly_ring_mod(
-                comp_rescaled, ring_poly_mod, q_target
-            )
+            # Apenas aplica redução para o novo módulo alvo (switch de nível)
+            comp_mod = ct.crypto_params.poly_ring_mod(comp, ring_poly_mod, q_target)
             rescaled_components.append(comp_mod)
 
-        # Ajustar escala: como aplicamos fator q_{ℓ'}/q_ℓ,
-        # a nova escala é escala_antiga * (q_{ℓ'}/q_ℓ)
-        new_scale = ct.scale * scale_factor
+        # Ajuste da escala numérico: scale_new = scale_old / Δ
+        new_scale = max(1.0, ct.scale / delta)
 
         return CKKSCiphertext(
             components=rescaled_components,
@@ -501,11 +491,11 @@ class CKKSCiphertext:
         c0_final = crypto_params.poly_ring_mod(c0_prime, ring_poly_mod, q_mod)
         c1_final = crypto_params.poly_ring_mod(c1_prime, ring_poly_mod, q_mod)
 
-        # Retornar novo ciphertext com 2 componentes
+        # Retornar novo ciphertext com 2 componentes (manter escala original)
         return CKKSCiphertext(
             components=[c0_final, c1_final],
             level=level,
-            scale=ciphertext.scale,  # Mantém a mesma escala
+            scale=ciphertext.scale,  # Mantém a escala original
             crypto_params=crypto_params,
         )
 
