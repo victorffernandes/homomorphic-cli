@@ -63,9 +63,20 @@ class CKKSCiphertextFactory:
         if n_poly_coeffs is None:
             n_poly_coeffs = self.crypto_params.POLYNOMIAL_DEGREE
 
+        # Número máximo de slots disponíveis (N/2)
+        max_slots = n_poly_coeffs // 2
+
+        # Converte o vetor de entrada para np.array e garante o tamanho correto
+        input_array = np.array(real_vector, dtype=np.float64)
+        if len(input_array) > max_slots:
+            print(
+                f"Aviso: Vetor de entrada truncado de {len(input_array)} para {max_slots} elementos"
+            )
+            input_array = input_array[:max_slots]
+
         # Cria vetor complexo para FFT
-        z = np.zeros(n_poly_coeffs // 2 + 1, dtype=np.float64)
-        z[: len(real_vector)] = np.array(real_vector, dtype=np.float64) * delta_scale
+        z = np.zeros(max_slots + 1, dtype=np.float64)
+        z[: len(input_array)] = input_array * delta_scale
 
         # Aplica FFT inversa para obter coeficientes polinomiais
         poly_real_coeffs = np.fft.irfft(z, n=n_poly_coeffs)
@@ -136,21 +147,20 @@ class CKKSCiphertextFactory:
         n_degree = self.crypto_params.POLYNOMIAL_DEGREE
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
         sigma_err = self.crypto_params.GAUSSIAN_NOISE_STDDEV
+        zero_one_density = (
+            self.crypto_params.ZERO_ONE_DENSITY
+        )  # Densidade para distribuição zero-one
 
         pk_b, pk_a = public_key
 
         # Gera ruídos aleatórios
-        u = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
+        u = self.crypto_params.generate_zero_one_poly(n_degree, zero_one_density)
         e1 = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
         e2 = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
 
         # Calcula componentes do ciphertext
-        c0 = (
-            self.crypto_params.poly_mul_mod(pk_b, u, q_mod, ring_poly_mod)
-            + e1
-            + message_poly
-        )
-        c1 = self.crypto_params.poly_mul_mod(pk_a, u, q_mod, ring_poly_mod) + e2
+        c0 = pk_b + u + e1 + message_poly
+        c1 = pk_a + u + e2
 
         # Aplica redução modular
         c0_final = self.crypto_params.poly_ring_mod(c0, ring_poly_mod, q_mod)
@@ -159,7 +169,6 @@ class CKKSCiphertextFactory:
         return CKKSCiphertext(
             components=[c0_final, c1_final],
             level=level,
-            scale=self.crypto_params.SCALING_FACTOR,
             crypto_params=self.crypto_params,
         )
 
@@ -180,48 +189,18 @@ class CKKSCiphertextFactory:
         if isinstance(ciphertext, dict):
             ciphertext = CKKSCiphertext.from_dict(ciphertext, self.crypto_params)
 
-        level = ciphertext.level
-        q_mod = self.crypto_params.MODULUS_CHAIN[level]
+        q_mod = ciphertext.current_modulus
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
 
-        if ciphertext.size == 2:
-            # Descriptografia padrão para ciphertext de 2 componentes: m = c0 + c1*s
-            c0 = ciphertext.get_component(0)
-            c1 = ciphertext.get_component(1)
+        # Descriptografia padrão para ciphertext de 2 componentes: m = c0 + c1*s
+        c0 = ciphertext.get_component(0)
+        c1 = ciphertext.get_component(1)
 
-            # Calcula c1 * s
-            c1_s = self.crypto_params.poly_mul_mod(c1, secret_key, q_mod, ring_poly_mod)
+        # Calcula c1 * s
+        c1_s = self.crypto_params.poly_mul_mod(c1, secret_key, q_mod, ring_poly_mod)
 
-            # Descriptografa: c0 + c1*s
-            decrypted_poly = c0 + c1_s
-
-        elif ciphertext.size == 3:
-            # Descriptografia para ciphertext de 3 componentes seguindo a fórmula CKKS:
-            # Fórmula: C'₁ + s·C'₂ + s²·C'₃
-            # Aplicar poly_mul_mod apenas no final
-
-            c0 = ciphertext.get_component(0)  # C'₁
-            c1 = ciphertext.get_component(1)  # C'₂
-            c2 = ciphertext.get_component(2)  # C'₃
-
-            # Calcular s² (multiplicação simples, sem redução modular ainda)
-            s_squared = self.crypto_params.poly_mul(secret_key, secret_key)
-
-            # Calcular cada termo sem redução modular intermediária:
-            # Termo 1: C'₁ (já está correto)
-            # Termo 2: s · C'₂
-            term2 = self.crypto_params.poly_mul(secret_key, c1)
-
-            # Termo 3: s² · C'₃
-            term3 = self.crypto_params.poly_mul(s_squared, c2)
-
-            # Soma final: C'₁ + s·C'₂ + s²·C'₃
-            decrypted_poly = c0 + term2 + term3
-
-        else:
-            raise ValueError(
-                f"Descriptografia não suportada para ciphertext com {ciphertext.size} componentes"
-            )
+        # Descriptografa: c0 + c1*s
+        decrypted_poly = c0 + c1_s
 
         # Aplica redução modular final
         final_poly = self.crypto_params.poly_ring_mod(
@@ -294,10 +273,22 @@ class CKKSCiphertextFactory:
 
 class CKKSKeyFactory:
     """
-    Fábrica para geração e gerenciamento de chaves CKKS.
+    Fábrica para geração e gerenciamento de chaves CKKS seguindo a definição KeyGen formal.
 
-    Esta classe encapsula a geração de chaves secretas, públicas e de relinearização
-    para o esquema CKKS, seguindo as melhores práticas de segurança.
+    Esta classe implementa a geração de chaves conforme especificado:
+
+    KeyGen(1λ):
+    - Escolhe parâmetros M, h, P, σ baseados no parâmetro de segurança λ
+    - Sample s ← HWT(h): chave secreta com peso de Hamming h
+    - Sample a ← RqL, e ← DG(σ²): elementos para chave pública
+    - Set sk ← (1, s), pk ← (b, a) onde b ← −as + e (mod qL)
+    - Sample a' ← RP·qL, e' ← DG(σ²): elementos para evaluation key
+    - Set evk ← (b', a') onde b' ← −a's + e' + P s² (mod P · qL)
+
+    Distribuições utilizadas:
+    - DG(σ²): Gaussiana Discreta com variância σ²
+    - HWT(h): Vetores binários {0, ±1}^N com peso de Hamming h
+    - ZO(ρ): Distribuição zero-one com densidade ρ
     """
 
     def __init__(self, crypto_params: CKKSCryptographicParameters = None):
@@ -312,207 +303,267 @@ class CKKSKeyFactory:
 
         self.crypto_params = crypto_params
 
-    def generate_secret_key(self) -> Polynomial:
+    def generate_secret_key(self, hamming_weight: int = None) -> Polynomial:
         """
-        Gera uma chave secreta para o esquema CKKS.
+        Gera uma chave secreta para o esquema CKKS seguindo a distribuição HWT(h).
+
+        Conforme a definição KeyGen:
+        - Sample s ← HWT(h)
+        - Set the secret key as sk ← (1, s)
+
+        Note: Retornamos apenas o componente 's', pois o componente '1' é implícito
+        na estrutura do ciphertext.
+
+        Args:
+            hamming_weight: Peso de Hamming h (usa padrão se None)
 
         Returns:
-            Polynomial: Chave secreta gerada com distribuição gaussiana
+            Polynomial: Chave secreta s com peso de Hamming h
         """
-        return self.crypto_params.generate_gaussian_poly(
-            self.crypto_params.POLYNOMIAL_DEGREE,
-            self.crypto_params.GAUSSIAN_NOISE_STDDEV,
+        if hamming_weight is None:
+            hamming_weight = self.crypto_params.HAMMING_WEIGHT
+
+        return self.crypto_params.generate_hamming_weight_poly(
+            self.crypto_params.POLYNOMIAL_DEGREE, hamming_weight
         )
 
     def generate_public_key(
         self, secret_key: Polynomial, level: int = None
     ) -> Tuple[Polynomial, Polynomial]:
         """
-        Gera uma chave pública a partir da chave secreta.
+        Gera uma chave pública a partir da chave secreta seguindo a definição KeyGen.
+
+        Conforme a definição:
+        - Sample a ← RqL and e ← DG(σ²)
+        - Set the public key as pk ← (b, a) ∈ R²qL where b ← −as + e (mod qL)
 
         Args:
-            secret_key: Chave secreta para derivar a chave pública
+            secret_key: Chave secreta s para derivar a chave pública
             level: Nível na cadeia de módulos (usa o maior se None)
 
         Returns:
-            Tuple[Polynomial, Polynomial]: Tupla (pk_b, pk_a) da chave pública
+            Tuple[Polynomial, Polynomial]: Tupla (b, a) da chave pública
         """
         if level is None:
             level = len(self.crypto_params.MODULUS_CHAIN) - 1
 
         n_degree = self.crypto_params.POLYNOMIAL_DEGREE
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
-        q_mod = self.crypto_params.MODULUS_CHAIN[level]
-        sigma_err = self.crypto_params.GAUSSIAN_NOISE_STDDEV
+        q_mod = self.crypto_params.MODULUS_CHAIN[level]  # qL
+        sigma = self.crypto_params.GAUSSIAN_NOISE_STDDEV
 
-        # Gera componente aleatório pk_a
-        pk_a = self.crypto_params.generate_uniform_random_poly(n_degree, q_mod)
+        # Sample a ← RqL (componente aleatório uniforme)
+        a = self.crypto_params.generate_uniform_random_poly(n_degree, q_mod)
 
-        # Gera erro gaussiano
-        e_err = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
+        # Sample e ← DG(σ²) (erro gaussiano)
+        e = self.crypto_params.generate_gaussian_poly(n_degree, sigma)
 
-        # Calcula pk_b = -(pk_a * secret_key) + e_err
-        neg_a_s = -self.crypto_params.poly_mul_mod(
-            pk_a, secret_key, q_mod, ring_poly_mod
-        )
-        pk_b = (neg_a_s + e_err) % ring_poly_mod
+        # Calcular b ← −as + e (mod qL)
+        # Primeiro calcula as (a * s)
+        a_s = self.crypto_params.poly_mul_mod(a, secret_key, q_mod, ring_poly_mod)
 
-        # Aplica redução modular
-        pk_b_final = self.crypto_params.poly_ring_mod(pk_b, ring_poly_mod, q_mod)
+        # Depois calcula -as + e
+        b = -a_s + e
 
-        return (pk_b_final, pk_a)
+        # Aplica redução modular final
+        b_final = self.crypto_params.poly_ring_mod(b, ring_poly_mod, q_mod)
 
-    def generate_relinearization_key(
-        self, secret_key: Polynomial, level: int = None
-    ) -> Tuple[Polynomial, Polynomial]:
-        """
-        Gera uma chave de relinearização para o esquema CKKS.
-
-        Args:
-            secret_key: Chave secreta para derivar a chave de relinearização
-            level: Nível na cadeia de módulos (usa o maior se None)
-
-        Returns:
-            Tuple[Polynomial, Polynomial]: Tupla (rlk_b, rlk_a) da chave de relinearização
-        """
-        if level is None:
-            level = len(self.crypto_params.MODULUS_CHAIN) - 1
-
-        n_degree = self.crypto_params.POLYNOMIAL_DEGREE
-        ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
-        q_mod = self.crypto_params.MODULUS_CHAIN[level]
-        sigma_err = self.crypto_params.GAUSSIAN_NOISE_STDDEV
-
-        # Calcula secret_key^2
-        sk_s_squared = self.crypto_params.poly_mul_mod(
-            secret_key, secret_key, q_mod, ring_poly_mod
-        )
-
-        # Gera componente aleatório rlk_a
-        rlk_a = self.crypto_params.generate_uniform_random_poly(n_degree, q_mod)
-
-        # Gera erro gaussiano
-        e_err = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-
-        # Calcula rlk_b = -(rlk_a * secret_key) + e_err + secret_key^2
-        neg_a_s = self.crypto_params.poly_mul_mod(
-            rlk_a, secret_key, q_mod, ring_poly_mod
-        )
-        rlk_b = (-(neg_a_s + e_err) + sk_s_squared) % ring_poly_mod
-
-        # Aplica redução modular
-        rlk_b_final = self.crypto_params.poly_ring_mod(rlk_b, ring_poly_mod, q_mod)
-
-        return (rlk_b_final, rlk_a)
+        # Retorna pk ← (b, a)
+        return (b_final, a)
 
     def generate_evaluation_key(
         self, secret_key: Polynomial, level: int = None, P: int = None
     ) -> Tuple[Polynomial, Polynomial]:
         """
-        Gera uma Evaluation Key (EVK) para reduzir ciphertexts de 3 para 2 componentes.
+        Gera uma Evaluation Key (EVK) seguindo a definição KeyGen.
 
-        Fórmula: EVK = (EVK1, EVK2) = ([-(a·s + e) + P·s²]_{P·q}, a)
-        onde P é um parâmetro inteiro (aproximadamente do tamanho de q para baixo ruído),
-        a é um polinômio aleatório em R_{P·q}, e e é um polinômio pequeno aleatório.
+        Conforme a definição:
+        - Sample a' ← RP·qL and e' ← DG(σ²)
+        - Set the evaluation key as evk ← (b', a') ∈ R²P·qL
+          where b' ← −a's + e' + P s² (mod P · qL)
 
         Args:
-            secret_key: Chave secreta para derivar a evaluation key
+            secret_key: Chave secreta s para derivar a evaluation key
             level: Nível na cadeia de módulos (usa o maior se None)
-            P: Parâmetro P (usa q/1000 se None para evitar overflow)
+            P: Parâmetro P conforme definição (usa valor padrão se None)
 
         Returns:
-            Tuple[Polynomial, Polynomial]: Tupla (evk1, evk2) da evaluation key
+            Tuple[Polynomial, Polynomial]: Tupla (b', a') da evaluation key
         """
         if level is None:
             level = len(self.crypto_params.MODULUS_CHAIN) - 1
 
         n_degree = self.crypto_params.POLYNOMIAL_DEGREE
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
-        q_mod = self.crypto_params.MODULUS_CHAIN[level]
-        sigma_err = self.crypto_params.GAUSSIAN_NOISE_STDDEV
+        qL = self.crypto_params.MODULUS_CHAIN[level]  # qL
+        P = self.crypto_params.P
+        sigma = self.crypto_params.GAUSSIAN_NOISE_STDDEV
 
-        # P deve ser menor para evitar overflow, mas ainda grande o suficiente
-        if P is None:
-            P = max(
-                1000, min(q_mod // 100, 10000)
-            )  # P muito menor para evitar problemas
+        P_qL = self.crypto_params.P * qL  # P · qL
 
-        # Verificar se P*q não causa overflow em int64
-        pq_mod = P * q_mod
+        # Verificar overflow
         max_int64 = 2**63 - 1
-        if pq_mod > max_int64:
-            # Ajustar P para não causar overflow
-            P = max_int64 // q_mod
-            pq_mod = P * q_mod
+        if P_qL > max_int64:
+            P = max_int64 // qL
+            P_qL = P * qL
             print(f"Aviso: P ajustado para {P} para evitar overflow")
 
-        # Calcular s² (secret_key ao quadrado)
+        # Sample a' ← RP·qL (componente aleatório uniforme em RP·qL)
+        a_prime = self.crypto_params.generate_uniform_random_poly(n_degree, P_qL)
+
+        # Sample e' ← DG(σ²) (erro gaussiano)
+        e_prime = self.crypto_params.generate_gaussian_poly(n_degree, sigma)
+
+        # Calcular s² (s ao quadrado)
         s_squared = self.crypto_params.poly_mul_mod(
-            secret_key, secret_key, pq_mod, ring_poly_mod
+            secret_key, secret_key, P_qL, ring_poly_mod
         )
 
-        # Calcular P·s²
-        p_s_squared = (P * s_squared) % ring_poly_mod
+        # Calcular P · s²
+        P_s_squared = P * s_squared
 
-        # Gerar componente aleatório a em R_{P·q}
-        evk_a = self.crypto_params.generate_uniform_random_poly(n_degree, pq_mod)
+        # Calcular b' ← −a's + e' + P s² (mod P · qL)
+        # Primeiro: a' · s
+        a_prime_s = self.crypto_params.poly_mul_mod(
+            a_prime, secret_key, P_qL, ring_poly_mod
+        )
 
-        # Gerar erro gaussiano pequeno
-        e_err = self.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-
-        # Calcular evk1 = [-(a·s + e) + P·s²]_{P·q}
-        # Primeiro calcula a·s
-        a_s = self.crypto_params.poly_mul_mod(evk_a, secret_key, pq_mod, ring_poly_mod)
-
-        # Depois calcula -(a·s + e) + P·s²
-        evk1 = (-a_s - e_err + p_s_squared) % ring_poly_mod
+        # Depois: −a's + e' + P s²
+        b_prime = -a_prime_s + e_prime + P_s_squared
 
         # Aplica redução modular final
-        evk1_final = self.crypto_params.poly_ring_mod(evk1, ring_poly_mod, pq_mod)
+        b_prime_final = self.crypto_params.poly_coeffs_mod_q(b_prime, P_qL)
 
-        return (evk1_final, evk_a)
+        # Retorna evk ← (b', a')
+        return (b_prime_final, a_prime)
+
+    def generate_key_switching_key(
+        self,
+        old_secret_key: Polynomial,
+        new_secret_key: Polynomial,
+        level: int = None,
+        P: int = None,
+    ) -> Tuple[Polynomial, Polynomial]:
+        """
+        Gera uma Key Switching Key (KSK) para transformar ciphertexts de uma chave para outra.
+
+        Conforme a definição de Key Switching:
+        KSK_SK'(s) = ([-(a·s' + e) + P·s]_{P·q}, a)
+
+        Onde:
+        - s é a chave secreta original (old_secret_key)
+        - s' é a nova chave secreta (new_secret_key)
+        - a é um polinômio aleatório em R_{P·q}
+        - e é um erro gaussiano pequeno
+        - P é um fator de escala auxiliar
+
+        Esta chave permite transformar um ciphertext que criptografa m sob SK = (1, s)
+        em um ciphertext que criptografa a mesma mensagem m sob SK' = (1, s').
+
+        Args:
+            old_secret_key: Chave secreta original s
+            new_secret_key: Nova chave secreta s'
+            level: Nível na cadeia de módulos (usa o maior se None)
+            P: Parâmetro de escala auxiliar (usa valor padrão se None)
+
+        Returns:
+            Tuple[Polynomial, Polynomial]: Tupla (ksk0, ksk1) onde:
+                - ksk0 = [-(a·s' + e) + P·s]_{P·q}
+                - ksk1 = a
+        """
+        if level is None:
+            level = len(self.crypto_params.MODULUS_CHAIN) - 1
+
+        n_degree = self.crypto_params.POLYNOMIAL_DEGREE
+        ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
+        q = self.crypto_params.MODULUS_CHAIN[level]
+        sigma = self.crypto_params.GAUSSIAN_NOISE_STDDEV
+
+        # Usar P padrão se não fornecido
+        if P is None:
+            P = self.crypto_params.P
+
+        P_q = P * q  # P · q
+
+        # Verificar overflow
+        max_int64 = 2**63 - 1
+        if P_q > max_int64:
+            P = max_int64 // q
+            P_q = P * q
+            print(f"Aviso: P ajustado para {P} para evitar overflow")
+
+        # Sample a ← R_{P·q} (componente aleatório uniforme em R_{P·q})
+        a = self.crypto_params.generate_uniform_random_poly(n_degree, P_q)
+
+        # Sample e ← DG(σ²) (erro gaussiano)
+        e = self.crypto_params.generate_gaussian_poly(n_degree, sigma)
+
+        # Calcular a · s' (mod P·q)
+        a_s_prime = self.crypto_params.poly_mul_mod(
+            a, new_secret_key, P_q, ring_poly_mod
+        )
+
+        # Calcular P · s (escalar vezes polinômio)
+        P_s = P * old_secret_key
+
+        # Calcular ksk0 = [-(a·s' + e) + P·s]_{P·q}
+        # Primeiro: -(a·s' + e)
+        neg_a_s_prime_plus_e = -a_s_prime - e
+
+        # Depois: -(a·s' + e) + P·s
+        ksk0 = neg_a_s_prime_plus_e + P_s
+
+        # Aplicar redução modular
+        ksk0_final = self.crypto_params.poly_coeffs_mod_q(ksk0, P_q)
+
+        # ksk1 é simplesmente a
+        ksk1 = a
+
+        # Retornar KSK_SK'(s) = (ksk0, ksk1)
+        return (ksk0_final, ksk1)
 
     def generate_keypair(
-        self, level: int = None
+        self, level: int = None, hamming_weight: int = None
     ) -> Tuple[Polynomial, Tuple[Polynomial, Polynomial]]:
         """
-        Gera um par completo de chaves (secreta e pública).
+        Gera um par completo de chaves (secreta e pública) seguindo a definição KeyGen.
 
         Args:
             level: Nível na cadeia de módulos (usa o maior se None)
+            hamming_weight: Peso de Hamming para chave secreta (usa padrão se None)
 
         Returns:
-            Tuple: (secret_key, public_key) onde public_key = (pk_b, pk_a)
+            Tuple: (secret_key, public_key) onde:
+                - secret_key: s ← HWT(h)
+                - public_key: (b, a) onde b ← −as + e (mod qL)
         """
-        secret_key = self.generate_secret_key()
+        secret_key = self.generate_secret_key(hamming_weight)
         public_key = self.generate_public_key(secret_key, level)
         return secret_key, public_key
 
     def generate_full_keyset(
-        self, level: int = None
+        self, level: int = None, hamming_weight: int = None
     ) -> Dict[str, Union[Polynomial, Tuple[Polynomial, Polynomial]]]:
         """
-        Gera um conjunto completo de chaves para operações CKKS.
+        Gera um conjunto completo de chaves para operações CKKS seguindo a definição KeyGen.
 
         Args:
             level: Nível na cadeia de módulos (usa o maior se None)
+            hamming_weight: Peso de Hamming para chave secreta (usa padrão se None)
 
         Returns:
             Dict: Dicionário contendo todas as chaves:
-                - 'secret_key': Chave secreta
-                - 'public_key': Chave pública (pk_b, pk_a)
-                - 'relinearization_key': Chave de relinearização (rlk_b, rlk_a)
-                - 'evaluation_key': Chave de avaliação (evk1, evk2)
+                - 'secret_key': Chave secreta s ← HWT(h)
+                - 'public_key': Chave pública (b, a)
+                - 'evaluation_key': Chave de avaliação (b', a')
         """
-        secret_key = self.generate_secret_key()
+        secret_key = self.generate_secret_key(hamming_weight)
         public_key = self.generate_public_key(secret_key, level)
-        relinearization_key = self.generate_relinearization_key(secret_key, level)
         evaluation_key = self.generate_evaluation_key(secret_key, level)
 
         return {
             "secret_key": secret_key,
             "public_key": public_key,
-            "relinearization_key": relinearization_key,
             "evaluation_key": evaluation_key,
         }
 

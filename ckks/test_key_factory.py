@@ -95,38 +95,47 @@ class TestCKKSKeyFactory:
         assert isinstance(pk_b, Polynomial)
         assert isinstance(pk_a, Polynomial)
 
-    def test_generate_relinearization_key(self):
-        """Testa a geração de chave de relinearização."""
+    def test_generate_evaluation_key_basic(self):
+        """Testa a geração básica de evaluation key (antiga relinearization key)."""
         secret_key = self.key_factory.generate_secret_key()
-        relin_key = self.key_factory.generate_relinearization_key(secret_key)
+        eval_key = self.key_factory.generate_evaluation_key(secret_key)
 
         # Verifica que retorna uma tupla de dois elementos
-        assert isinstance(relin_key, tuple)
-        assert len(relin_key) == 2
+        assert isinstance(eval_key, tuple)
+        assert len(eval_key) == 2
 
-        rlk_b, rlk_a = relin_key
+        b_prime, a_prime = eval_key
 
         # Verifica que ambos são polinômios
-        assert isinstance(rlk_b, Polynomial)
-        assert isinstance(rlk_a, Polynomial)
+        assert isinstance(b_prime, Polynomial)
+        assert isinstance(a_prime, Polynomial)
 
         # Verifica que não são zero
-        if hasattr(rlk_b, "coef") and hasattr(rlk_a, "coef"):
-            assert not np.allclose(rlk_b.coef, 0)
-            assert not np.allclose(rlk_a.coef, 0)
+        if hasattr(b_prime, "coef") and hasattr(a_prime, "coef"):
+            assert not np.allclose(b_prime.coef, 0)
+            assert not np.allclose(a_prime.coef, 0)
 
-    def test_generate_relinearization_key_with_level(self):
-        """Testa a geração de chave de relinearização com nível específico."""
+    def test_generate_evaluation_key_with_level(self):
+        """Testa a geração de evaluation key com nível específico."""
         secret_key = self.key_factory.generate_secret_key()
         level = 0
-        relin_key = self.key_factory.generate_relinearization_key(secret_key, level)
+        eval_key = self.key_factory.generate_evaluation_key(secret_key, level)
 
-        assert isinstance(relin_key, tuple)
-        assert len(relin_key) == 2
+        assert isinstance(eval_key, tuple)
+        assert len(eval_key) == 2
 
-        rlk_b, rlk_a = relin_key
-        assert isinstance(rlk_b, Polynomial)
-        assert isinstance(rlk_a, Polynomial)
+        b_prime, a_prime = eval_key
+        assert isinstance(b_prime, Polynomial)
+        assert isinstance(a_prime, Polynomial)
+
+        # Verifica se está usando o módulo correto
+        q_mod = self.key_factory.crypto_params.MODULUS_CHAIN[level]
+
+        # Verifica que os coeficientes estão no range correto (P·qL)
+        if hasattr(b_prime, "coef") and hasattr(a_prime, "coef"):
+            P = self.key_factory.crypto_params.P
+            assert np.all(b_prime.coef < q_mod * P)
+            assert np.all(a_prime.coef < q_mod * P)
 
     def test_generate_keypair(self):
         """Testa a geração de par de chaves."""

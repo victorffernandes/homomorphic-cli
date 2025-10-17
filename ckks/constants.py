@@ -18,65 +18,105 @@ class CKKSCryptographicParameters:
     - Parâmetros de precisão
     - Estruturas algébricas
     - Configurações de ruído
+
+    A classe agora suporta parametrização no construtor seguindo a definição KeyGen(1λ).
     """
 
-    # === PARÂMETROS ESTRUTURAIS ===
-    POLYNOMIAL_DEGREE = 2048  # Grau do polinômio ciclotômico (N)
+    def __init__(
+        self,
+        polynomial_degree: int = 64,  # N - grau do polinômio ciclotômico
+        q0_base: int = 131071,  # Q0 - módulo base
+        scaling_factor: int = 4096,  # DELTA - fator de escala
+        gaussian_noise_stddev: float = 3.2,  # σ - desvio padrão gaussiano
+        hamming_weight: int = None,  # h - peso de Hamming (padrão: N/4)
+        zero_one_density: float = 0.5,  # ρ - densidade ZO
+        modulus_levels: int = 5,  # Número de níveis na cadeia de módulos
+    ):
+        """
+        Inicializa os parâmetros criptográficos CKKS.
 
-    # === MÓDULOS DA CADEIA CKKS ===
-    # Voltando aos módulos originais que funcionavam estruturalmente
-    MODULUS_CHAIN = [1099511922689, 1099512004609, 1099512037377]  # Q_CHAIN
+        Conforme definição KeyGen(1λ):
+        - Escolhe M = M(λ, qL), h = h(λ, qL), P = P(λ, qL), σ = σ(λ, qL)
 
-    # === PARÂMETROS DE ESCALA ===
-    SCALING_FACTOR = 1099511922688  # DELTA - fator de escala para codificação
+        Args:
+            polynomial_degree: N - deve ser potência de 2
+            p_parameter: P - parâmetro para evaluation key
+            q0_base: Q0 - módulo base para construir cadeia
+            scaling_factor: DELTA - fator de escala para codificação
+            gaussian_noise_stddev: σ - desvio padrão para DG(σ²)
+            hamming_weight: h - peso de Hamming para HWT(h) (padrão: N/4)
+            zero_one_density: ρ - densidade para ZO(ρ)
+            modulus_levels: Número de níveis na cadeia de módulos
+        """
+        # === PARÂMETROS ESTRUTURAIS ===
+        self.POLYNOMIAL_DEGREE = polynomial_degree  # N
 
-    # === PARÂMETROS DE RUÍDO ===
-    GAUSSIAN_NOISE_STDDEV = 3.2  # SIGMA - desvio padrão do ruído gaussiano
+        # Define P conforme especificação (deve ser escolhido baseado em λ, qL)
+        self.p_small = 2
+
+        self.Q0 = q0_base  # Q0
+
+        # === MÓDULOS DA CADEIA CKKS ===
+        self.MODULUS_CHAIN = [
+            self.p_small**i * self.Q0 for i in range(1, modulus_levels + 1)
+        ]
+
+        self.P = max(1000, min(self.MODULUS_CHAIN[-1] // 100, 10000))
+
+        # === PARÂMETROS DE ESCALA ===
+        self.SCALING_FACTOR = scaling_factor  # DELTA
+
+        # === PARÂMETROS DE RUÍDO ===
+        self.GAUSSIAN_NOISE_STDDEV = gaussian_noise_stddev  # σ
+
+        # === PARÂMETROS PARA DISTRIBUIÇÕES DE CHAVE ===
+        if hamming_weight is None:
+            hamming_weight = max(1, polynomial_degree // 4)  # Padrão: N/4
+        self.HAMMING_WEIGHT = hamming_weight  # h
+        self.ZERO_ONE_DENSITY = zero_one_density  # ρ
+
+        # Validar parâmetros após inicialização
+        self.validate_parameters()
 
     # === ESTRUTURAS ALGÉBRICAS ===
-    @classmethod
-    def get_polynomial_modulus_ring(cls):
+    def get_polynomial_modulus_ring(self):
         """
         Retorna o anel de polinômios modulares X^N + 1.
 
         Returns:
             Polynomial: O polinômio ciclotômico X^N + 1
         """
-        return Polynomial([1] + [0] * (cls.POLYNOMIAL_DEGREE - 1) + [1])
+        return Polynomial([1] + [0] * (self.POLYNOMIAL_DEGREE - 1) + [1])
 
     # === MÉTODOS DE ACESSO ===
-    @classmethod
-    def get_initial_modulus(cls):
+    def get_initial_modulus(self):
         """
         Retorna o módulo inicial (último da cadeia).
 
         Returns:
             int: O maior módulo da cadeia
         """
-        return cls.MODULUS_CHAIN[-1]
+        return self.MODULUS_CHAIN[-1]
 
-    @classmethod
-    def get_maximum_plaintext_slots(cls):
+    def get_maximum_plaintext_slots(self):
         """
         Retorna o número máximo de slots disponíveis para texto claro.
 
         Returns:
             int: Número de slots (N/2)
         """
-        return cls.POLYNOMIAL_DEGREE // 2
+        return self.POLYNOMIAL_DEGREE // 2
 
-    @classmethod
-    def get_scaling_factor_squared(cls):
+    def get_scaling_factor_squared(self):
         """
         Retorna o quadrado do fator de escala, usado após multiplicação.
 
         Returns:
             int: DELTA²
         """
-        return cls.SCALING_FACTOR**2
+        return self.SCALING_FACTOR**2
 
-    @classmethod
-    def validate_parameters(cls):
+    def validate_parameters(self):
         """
         Valida a consistência dos parâmetros criptográficos.
 
@@ -84,27 +124,26 @@ class CKKSCryptographicParameters:
             ValueError: Se algum parâmetro estiver inconsistente
         """
         if (
-            cls.POLYNOMIAL_DEGREE <= 0
-            or (cls.POLYNOMIAL_DEGREE & (cls.POLYNOMIAL_DEGREE - 1)) != 0
+            self.POLYNOMIAL_DEGREE <= 0
+            or (self.POLYNOMIAL_DEGREE & (self.POLYNOMIAL_DEGREE - 1)) != 0
         ):
             raise ValueError("POLYNOMIAL_DEGREE deve ser uma potência de 2 positiva")
 
-        if not cls.MODULUS_CHAIN or len(cls.MODULUS_CHAIN) == 0:
+        if not self.MODULUS_CHAIN or len(self.MODULUS_CHAIN) == 0:
             raise ValueError("MODULUS_CHAIN não pode estar vazia")
 
-        if cls.SCALING_FACTOR <= 0:
+        if self.SCALING_FACTOR <= 0:
             raise ValueError("SCALING_FACTOR deve ser positivo")
 
-        if cls.GAUSSIAN_NOISE_STDDEV <= 0:
+        if self.GAUSSIAN_NOISE_STDDEV <= 0:
             raise ValueError("GAUSSIAN_NOISE_STDDEV deve ser positivo")
 
         # Verifica se os módulos estão em ordem crescente
-        for i in range(1, len(cls.MODULUS_CHAIN)):
-            if cls.MODULUS_CHAIN[i] <= cls.MODULUS_CHAIN[i - 1]:
+        for i in range(1, len(self.MODULUS_CHAIN)):
+            if self.MODULUS_CHAIN[i] <= self.MODULUS_CHAIN[i - 1]:
                 raise ValueError("MODULUS_CHAIN deve estar em ordem crescente")
 
-    @classmethod
-    def get_security_level_estimate(cls):
+    def get_security_level_estimate(self):
         """
         Retorna uma estimativa do nível de segurança baseado nos parâmetros.
 
@@ -113,33 +152,37 @@ class CKKSCryptographicParameters:
         """
         # Estimativa simplificada baseada no grau do polinômio
         # Para uma análise real, seria necessário considerar outros fatores
-        return int(np.log2(cls.POLYNOMIAL_DEGREE) * 10)
+        return int(np.log2(self.POLYNOMIAL_DEGREE) * 10)
 
-    @classmethod
-    def print_parameters_summary(cls):
+    def print_parameters_summary(self):
         """
         Imprime um resumo dos parâmetros configurados.
         """
         print("=== PARÂMETROS CRIPTOGRÁFICOS CKKS ===")
-        print(f"Grau do polinômio (N): {cls.POLYNOMIAL_DEGREE}")
+        print(f"Grau do polinômio (N): {self.POLYNOMIAL_DEGREE}")
         print(
-            f"Fator de escala (DELTA): {cls.SCALING_FACTOR} (~2^{int(np.log2(cls.SCALING_FACTOR))})"
+            f"Fator de escala (DELTA): {self.SCALING_FACTOR} (~2^{int(np.log2(self.SCALING_FACTOR))})"
         )
-        print(f"Desvio padrão do ruído (SIGMA): {cls.GAUSSIAN_NOISE_STDDEV}")
-        print(f"Cadeia de módulos: {len(cls.MODULUS_CHAIN)} níveis")
+        print(f"Desvio padrão do ruído (SIGMA): {self.GAUSSIAN_NOISE_STDDEV}")
+        print(f"Cadeia de módulos: {len(self.MODULUS_CHAIN)} níveis")
         print(
-            f"  - Maior módulo: {cls.MODULUS_CHAIN[-1]} (~{cls.MODULUS_CHAIN[-1].bit_length()} bits)"
+            f"  - Maior módulo: {self.MODULUS_CHAIN[-1]} "
+            f"(~{self.MODULUS_CHAIN[-1].bit_length()} bits)"
         )
         print(
-            f"  - Menor módulo: {cls.MODULUS_CHAIN[0]} (~{cls.MODULUS_CHAIN[0].bit_length()} bits)"
+            f"  - Menor módulo: {self.MODULUS_CHAIN[0]} "
+            f"(~{self.MODULUS_CHAIN[0].bit_length()} bits)"
         )
-        print(f"Slots disponíveis: {cls.get_maximum_plaintext_slots()}")
-        print(f"Nível de segurança estimado: ~{cls.get_security_level_estimate()} bits")
+        print(f"Slots disponíveis: {self.get_maximum_plaintext_slots()}")
+        print(
+            f"Nível de segurança estimado: ~{self.get_security_level_estimate()} bits"
+        )
+        print(f"Peso de Hamming (h): {self.HAMMING_WEIGHT}")
+        print(f"Densidade ZO (ρ): {self.ZERO_ONE_DENSITY}")
         print("=" * 40)
 
     # === FUNÇÕES AUXILIARES PARA OPERAÇÕES POLINOMIAIS ===
-    @classmethod
-    def poly_coeffs_mod_q(cls, p_numpy, q_coeff):
+    def poly_coeffs_mod_q(self, p_numpy, q_coeff):
         """
         Aplica operação modular aos coeficientes de um polinômio.
 
@@ -155,8 +198,7 @@ class CKKSCryptographicParameters:
             coeffs[i] = int(coeffs[i]) % q_coeff
         return Polynomial(coeffs)
 
-    @classmethod
-    def poly_ring_mod(cls, p_numpy, ring_poly_mod, q_coeff):
+    def poly_ring_mod(self, p_numpy, ring_poly_mod, q_coeff):
         """
         Aplica redução modular no anel polinomial.
 
@@ -169,10 +211,9 @@ class CKKSCryptographicParameters:
             Polynomial: Polinômio reduzido no anel
         """
         remainder_poly = p_numpy % ring_poly_mod
-        return cls.poly_coeffs_mod_q(remainder_poly, q_coeff)
+        return self.poly_coeffs_mod_q(remainder_poly, q_coeff)
 
-    @classmethod
-    def poly_mul_mod(cls, p1, p2, q, ring_poly_mod):
+    def poly_mul_mod(self, p1, p2, q, ring_poly_mod):
         """
         Multiplicação de polinômios com redução modular.
 
@@ -192,10 +233,9 @@ class CKKSCryptographicParameters:
             for j in range(len(coeffs2)):
                 prod_coeffs[i + j] += coeffs1[i] * coeffs2[j]
         full_poly = Polynomial(prod_coeffs)
-        return cls.poly_ring_mod(full_poly, ring_poly_mod, q)
+        return self.poly_ring_mod(full_poly, ring_poly_mod, q)
 
-    @classmethod
-    def poly_mul(cls, p1, p2):
+    def poly_mul(self, p1, p2):
         """
         Multiplicação de polinômios.
 
@@ -215,10 +255,9 @@ class CKKSCryptographicParameters:
         full_poly = Polynomial(prod_coeffs)
         return full_poly
 
-    @classmethod
-    def generate_gaussian_poly(cls, degree_n=None, sigma_val=None):
+    def generate_gaussian_poly(self, degree_n=None, sigma_val=None):
         """
-        Gera um polinômio com coeficientes gaussianos.
+        Gera um polinômio com coeficientes gaussianos (DG(σ²)).
 
         Args:
             degree_n: Grau do polinômio (usa POLYNOMIAL_DEGREE se None)
@@ -228,17 +267,90 @@ class CKKSCryptographicParameters:
             Polynomial: Polinômio com coeficientes gaussianos
         """
         if degree_n is None:
-            degree_n = cls.POLYNOMIAL_DEGREE
+            degree_n = self.POLYNOMIAL_DEGREE
         if sigma_val is None:
-            sigma_val = cls.GAUSSIAN_NOISE_STDDEV
+            sigma_val = self.GAUSSIAN_NOISE_STDDEV
 
         coeffs = np.round(np.random.normal(0, sigma_val, size=degree_n)).astype(
             np.int64
         )
         return Polynomial(coeffs)
 
-    @classmethod
-    def generate_uniform_random_poly(cls, degree_n=None, q_bound=None):
+    def generate_hamming_weight_poly(self, degree_n=None, hamming_weight=None):
+        """
+        Gera um polinômio com peso de Hamming específico (HWT(h)).
+
+        Distribui hamming_weight coeficientes não-zero {-1, +1} aleatoriamente
+        nos degree_n coeficientes, com os demais sendo 0.
+
+        Args:
+            degree_n: Grau do polinômio (usa POLYNOMIAL_DEGREE se None)
+            hamming_weight: Peso de Hamming desejado (usa 64 se None)
+
+        Returns:
+            Polynomial: Polinômio binário com peso de Hamming específico
+        """
+        if degree_n is None:
+            degree_n = self.POLYNOMIAL_DEGREE
+        if hamming_weight is None:
+            hamming_weight = min(
+                self.HAMMING_WEIGHT, degree_n // 4
+            )  # Default: configurado ou N/4
+
+        if hamming_weight > degree_n:
+            raise ValueError(
+                f"Peso de Hamming {hamming_weight} não pode ser maior que o grau {degree_n}"
+            )
+
+        # Inicializa todos os coeficientes como zero
+        coeffs = np.zeros(degree_n, dtype=np.int64)
+
+        # Escolhe posições aleatórias para colocar valores não-zero
+        positions = np.random.choice(degree_n, size=hamming_weight, replace=False)
+
+        # Para cada posição, escolhe aleatoriamente +1 ou -1
+        for pos in positions:
+            coeffs[pos] = np.random.choice([-1, 1])
+
+        return Polynomial(coeffs)
+
+    def generate_zero_one_poly(self, degree_n=None, density=None):
+        """
+        Gera um polinômio seguindo distribuição ZO(ρ).
+
+        Cada coeficiente é:
+        - +1 com probabilidade ρ/2
+        - -1 com probabilidade ρ/2
+        - 0 com probabilidade 1-ρ
+
+        Args:
+            degree_n: Grau do polinômio (usa POLYNOMIAL_DEGREE se None)
+            density: Densidade ρ (usa 0.5 se None)
+
+        Returns:
+            Polynomial: Polinômio seguindo distribuição ZO(ρ)
+        """
+        if degree_n is None:
+            degree_n = self.POLYNOMIAL_DEGREE
+        if density is None:
+            density = self.ZERO_ONE_DENSITY
+
+        if not 0 <= density <= 1:
+            raise ValueError(f"Densidade deve estar entre 0 e 1, recebido: {density}")
+
+        coeffs = np.zeros(degree_n, dtype=np.int64)
+
+        for i in range(degree_n):
+            rand_val = np.random.random()
+            if rand_val < density / 2:
+                coeffs[i] = -1
+            elif rand_val < density:
+                coeffs[i] = 1
+            # else: coeff[i] permanece 0
+
+        return Polynomial(coeffs)
+
+    def generate_uniform_random_poly(self, degree_n=None, q_bound=None):
         """
         Gera um polinômio com coeficientes uniformemente aleatórios.
 
@@ -250,9 +362,9 @@ class CKKSCryptographicParameters:
             Polynomial: Polinômio com coeficientes uniformemente aleatórios
         """
         if degree_n is None:
-            degree_n = cls.POLYNOMIAL_DEGREE
+            degree_n = self.POLYNOMIAL_DEGREE
         if q_bound is None:
-            q_bound = cls.get_initial_modulus()
+            q_bound = self.get_initial_modulus()
 
         coeffs = np.random.randint(0, q_bound, size=degree_n, dtype=np.int64)
         return Polynomial(coeffs)
@@ -261,8 +373,9 @@ class CKKSCryptographicParameters:
 # Validação automática dos parâmetros
 if __name__ == "__main__":
     try:
-        CKKSCryptographicParameters.validate_parameters()
-        CKKSCryptographicParameters.print_parameters_summary()
+        # Cria instância com parâmetros padrão para teste
+        params = CKKSCryptographicParameters()
+        params.print_parameters_summary()
         print("✓ Todos os parâmetros são válidos!")
     except ValueError as e:
         print(f"✗ Erro na validação dos parâmetros: {e}")
