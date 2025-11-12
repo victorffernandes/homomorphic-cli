@@ -156,7 +156,7 @@ if __name__ == "__main__":
 
     # Usar o método completo com rescale automático
     ct_mult_complete = CKKSCiphertext.multiply_homomorphic(
-        ct_test, ct_test, keyset["evaluation_key"], auto_rescale=True
+        ct_test, ct_test, keyset["evaluation_key"]
     )
 
     # Analisar escalas

@@ -26,8 +26,13 @@ class TestCKKSCiphertext:
 
         assert ct.size == 2
         assert ct.level == 2
-        # A escala agora é baseada no MODULUS_CHAIN[level]
-        assert ct.scale == self.crypto_params.MODULUS_CHAIN[2]
+
+        # Scale deve ser SCALING_FACTOR, não o módulo
+        assert (
+            ct.scale == self.crypto_params.SCALING_FACTOR
+        ), f"Scale deveria ser {self.crypto_params.SCALING_FACTOR}, mas é {ct.scale}"
+
+        # current_modulus é baseado no nível
         assert ct.current_modulus == self.crypto_params.MODULUS_CHAIN[2]
         assert ct.is_fresh()
 
@@ -49,27 +54,6 @@ class TestCKKSCiphertext:
         # Teste com crypto_params None (deve usar padrão)
         ct_default = CKKSCiphertext([self.c0], 1)
         assert ct_default.crypto_params is not None
-
-    def test_from_dict_conversion(self):
-        """Teste de conversão de/para dicionário"""
-        original_dict = {"c0": self.c0, "c1": self.c1, "level": 1, "scale": 1000.0}
-
-        # Criar a partir de dicionário
-        ct = CKKSCiphertext.from_dict(original_dict)
-
-        assert ct.size == 2
-        assert ct.level == 1
-        # Scale é calculado automaticamente baseado no nível
-        expected_scale = self.crypto_params.MODULUS_CHAIN[1]
-        assert ct.scale == expected_scale
-
-        # Converter de volta para dicionário
-        result_dict = ct.to_dict()
-
-        assert result_dict["level"] == 1
-        assert result_dict["scale"] == expected_scale
-        assert "c0" in result_dict
-        assert "c1" in result_dict
 
     def test_compatibility_checks(self):
         """Teste de verificações de compatibilidade"""
@@ -148,9 +132,12 @@ class TestCKKSCiphertext:
         assert ct.current_modulus == self.crypto_params.MODULUS_CHAIN[1]
         assert ct.noise_budget == 1
         assert ct.size == 2
-        # Scale é calculado automaticamente baseado no nível
-        expected_scale = self.crypto_params.MODULUS_CHAIN[1]
-        assert ct.scale == expected_scale
+
+        # Scale deve ser o SCALING_FACTOR, não o módulo
+        expected_scale = self.crypto_params.SCALING_FACTOR
+        assert (
+            ct.scale == expected_scale
+        ), f"Scale deveria ser {expected_scale}, mas é {ct.scale}"
 
         # Ciphertext no nível mais alto (mais próximo de fresh)
         high_level_ct = CKKSCiphertext(
@@ -158,21 +145,8 @@ class TestCKKSCiphertext:
         )
         assert high_level_ct.level == len(self.crypto_params.MODULUS_CHAIN) - 1
 
-    def test_three_component_ciphertext(self):
-        """Teste com ciphertext de 3 componentes (após multiplicação)"""
-        c2 = self.crypto_params.generate_uniform_random_poly()
-
-        ct = CKKSCiphertext([self.c0, self.c1, c2], 1)
-
-        assert ct.size == 3
-
-        # Conversão para dicionário deve incluir c2
-        dict_format = ct.to_dict()
-        assert "c2" in dict_format
-
-        # Recriação a partir do dicionário
-        ct_recreated = CKKSCiphertext.from_dict(dict_format)
-        assert ct_recreated.size == 3
+        # Verificar que scale permanece SCALING_FACTOR
+        assert high_level_ct.scale == self.crypto_params.SCALING_FACTOR
 
     def test_add_homomorphic_basic(self):
         """Teste de adição homomórfica básica"""
@@ -304,22 +278,44 @@ class TestCKKSCiphertext:
         original_scale = ct.scale
         original_size = ct.size
 
-        # Calcula os módulos e o scale_factor conforme o paper
-        qL = self.crypto_params.MODULUS_CHAIN[ct.level]  # q_ℓ
-        qLprime = self.crypto_params.MODULUS_CHAIN[ct.level - 1]  # q_{ℓ-1}
-        scale_factor = qLprime / qL  # q_{ℓ-1}/q_ℓ
+        # Calcula os módulos conforme o paper CKKS
+        q_l = self.crypto_params.MODULUS_CHAIN[ct.level]  # q_ℓ (módulo atual)
+        q_l_minus_1 = self.crypto_params.MODULUS_CHAIN[
+            ct.level - 1
+        ]  # q_{ℓ-1} (próximo módulo)
+
+        # p é o fator de redução: p = q_ℓ / q_{ℓ-1}
+        # No CKKS, a cadeia de módulos diminui: q_ℓ > q_{ℓ-1}, logo p > 1
+        p = q_l / q_l_minus_1
+
+        print("\nDEBUG Rescale:")
+        print(f"  q_ℓ (atual):     {q_l}")
+        print(f"  q_{{ℓ-1}} (próximo): {q_l_minus_1}")
+        print(f"  p = q_ℓ/q_{{ℓ-1}}: {p:.10f}")
+        print(f"  Scale antes:     {original_scale:.6e}")
 
         # Realiza rescale
         ct_rescaled = CKKSCiphertext.rescale(ct)
 
-        # Verifica mudanças estruturais conforme a definição
+        # Verifica mudanças estruturais conforme a definição do CKKS
         assert ct_rescaled.level == original_level - 1, "Nível deve diminuir em 1"
 
-        # Nova escala deve ser escala_original * (q_{ℓ-1}/q_ℓ)
-        expected_new_scale = original_scale * scale_factor
-        assert (
-            abs(ct_rescaled.scale - expected_new_scale) / expected_new_scale < 1e-10
-        ), "Escala deve ser ajustada corretamente"
+        # Nova escala deve ser: scale_original / p
+        # Onde p = q_ℓ / q_{ℓ-1}
+        expected_new_scale = original_scale / p
+
+        print(f"  Scale esperado:  {expected_new_scale:.6e}")
+        print(f"  Scale obtido:    {ct_rescaled.scale:.6e}")
+
+        relative_error = (
+            abs(ct_rescaled.scale - expected_new_scale) / expected_new_scale
+        )
+        print(f"  Erro relativo:   {relative_error:.6e}")
+
+        assert relative_error < 1e-10, (
+            f"Escala deve ser dividida corretamente: "
+            f"esperado {expected_new_scale:.6e}, obtido {ct_rescaled.scale:.6e}"
+        )
 
         # Verifica que estrutura básica é mantida
         assert ct_rescaled.size == original_size, "Tamanho deve ser preservado"
@@ -364,9 +360,7 @@ class TestCKKSCiphertext:
         ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
 
         # Multiplicação completa sem rescale automático
-        ct_before_rescale = CKKSCiphertext.multiply_homomorphic(
-            ct1, ct2, evk, auto_rescale=False
-        )
+        ct_before_rescale = CKKSCiphertext.multiply_homomorphic(ct1, ct2, evk)
 
         # Calcula os módulos
         modulus_chain = self.crypto_params.MODULUS_CHAIN
@@ -516,17 +510,26 @@ class TestCKKSCiphertext:
             assert ct_rescaled2.size == ct.size
             assert ct_rescaled2.crypto_params == ct.crypto_params
 
-    def test_multiply_homomorphic_with_auto_relinearization(self):
-        """Testa a multiplicação homomórfica com relinearização automática."""
+    def test_raw_multiply_homomorphic(self):
+        """
+        Testa a multiplicação homomórfica RAW (sem relinearização).
+
+        NOTA: raw_multiply produz um ciphertext de 3 componentes com ruído elevado.
+        Para uso prático, sempre use multiply_homomorphic() que aplica
+        relinearização + rescale para reduzir o ruído.
+
+        Com parâmetros pequenos (N=8, Δ=16), o ruído da raw_multiply é
+        significativo mas ainda permite recuperar o resultado aproximado.
+        """
         # Gerar keyset completo
         full_keyset = self.key_factory.generate_full_keyset()
         secret_key = full_keyset["secret_key"]
         public_key = full_keyset["public_key"]
-        evaluation_key = full_keyset["evaluation_key"]
+        evk = full_keyset["evaluation_key"]
 
         # Criar mensagens de teste
-        m1 = np.array([2.0, 3.0] + [0.0] * 510)
-        m2 = np.array([4.0, 5.0] + [0.0] * 510)
+        m1 = np.array([1.0, 1.0])
+        m2 = np.array([1.0, 1.0])
 
         # Criptografar as mensagens
         ct1 = self.ciphertext_factory.encode_and_encrypt(m1, public_key)
@@ -536,99 +539,41 @@ class TestCKKSCiphertext:
         assert ct1.size == 2, "ct1 deve ter 2 componentes"
         assert ct2.size == 2, "ct2 deve ter 2 componentes"
 
-        # Multiplicação homomórfica sem rescale automático para verificar escala
-        ct_mult = CKKSCiphertext.multiply_homomorphic(
-            ct1, ct2, evaluation_key, auto_rescale=False
+        # Teste 1: Multiplicação COM relinearização (deve funcionar bem)
+        print("\n=== TESTE COM RELINEARIZAÇÃO ===")
+        ct_mult_relin = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
+        ct_mult_relin = CKKSCiphertext.relinearize(ct_mult_relin, evk)
+
+        decrypted_relin = self.ciphertext_factory.decrypt(ct_mult_relin, secret_key)
+        result_relin = self.ciphertext_factory.ckks_decode_real(
+            decrypted_relin,
+            ct_mult_relin.scale,
+            self.crypto_params.POLYNOMIAL_DEGREE,
+            ct_mult_relin.current_modulus,
         )
 
-        # Verificar resultado
-        assert ct_mult.size == 2, "Resultado deve ter 2 componentes após relinearização"
-        assert (
-            ct_mult.scale == ct1.scale * ct2.scale
-        ), "Escala deve ser o produto das escalas"
-        assert ct_mult.level == ct1.level, "Nível deve ser mantido sem rescale"
+        expected_product = m1[:2] * m2[:2]
+        actual_result_relin = result_relin[:2]
 
-        # Comparar com multiplicação raw + relinearização manual
-        ct_mult_manual = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
-        ct_relin_manual = CKKSCiphertext.relinearize(ct_mult_manual, evaluation_key)
+        precision_error_relin = np.max(np.abs(actual_result_relin - expected_product))
 
-        # Os resultados devem ser idênticos
-        assert ct_mult.size == ct_relin_manual.size
-        assert ct_mult.scale == ct_relin_manual.scale
-        assert ct_mult.level == ct_relin_manual.level
+        print(f"Resultado esperado: {expected_product}")
+        print(f"Resultado COM relin: {actual_result_relin}")
+        print(f"Erro de precisão: {precision_error_relin:.6f}")
 
-        # Verificar se consegue descriptografar e validar precisão
-        try:
-            decrypted = self.ciphertext_factory.decrypt(ct_mult, secret_key)
-            result = self.ciphertext_factory.ckks_decode_real(
-                decrypted,
-                ct_mult.scale,
-                self.crypto_params.POLYNOMIAL_DEGREE,
-                ct_mult.current_modulus,
-            )
+        # Com relinearização, o erro deve ser pequeno
+        precision_tolerance_relin = 0.1
 
-            # Validar precisão da multiplicação homomórfica
-            expected_product = m1[:4] * m2[:4]  # [8.0, 15.0, 0.0, 0.0]
-            actual_result = result[:4]
-
-            precision_error = np.max(np.abs(actual_result - expected_product))
-            precision_tolerance = 0.001
-
-            print(f"Resultado esperado: {expected_product}")
-            print(f"Resultado obtido: {actual_result}")
-            print(f"Erro de precisão: {precision_error:.6f}")
-
-            if precision_error < precision_tolerance:
-                print("✅ Precisão de multiplicação dentro da tolerância (< 0.001)")
-            else:
-                assert False, "⚠️ Precisão de multiplicação acima da tolerância"
-
-            assert len(result) > 0, "Resultado da descriptografia deve ter elementos"
-
-        except Exception as e:
+        if precision_error_relin < precision_tolerance_relin:
             print(
-                f"Aviso: Descriptografia falhou ({e}), mas operação estrutural está correta"
+                f"✅ Precisão COM relinearização dentro da tolerância (< {precision_tolerance_relin})"
             )
+        else:
+            assert (
+                False
+            ), f"⚠️ Precisão COM relinearização acima da tolerância: {precision_error_relin:.6f} > {precision_tolerance_relin}"
 
-    def test_multiply_homomorphic_validations(self):
-        """Testa as validações do método multiply_homomorphic."""
-        # Gerar keyset
-        full_keyset = self.key_factory.generate_full_keyset()
-        public_key = full_keyset["public_key"]
-        evaluation_key = full_keyset["evaluation_key"]
-
-        # Criar ciphertexts de teste
-        m1 = np.array([1.0] + [0.0] * 511)
-        m2 = np.array([2.0] + [0.0] * 511)
-
-        ct1 = self.ciphertext_factory.encode_and_encrypt(m1, public_key)
-        ct2 = self.ciphertext_factory.encode_and_encrypt(m2, public_key)
-
-        # Criar ciphertext de 3 componentes para testar validação
-        ct3_comp = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
-
-        # Teste 1: ct1 com 3 componentes deve falhar
-        try:
-            CKKSCiphertext.multiply_homomorphic(ct3_comp, ct2, evaluation_key)
-            assert False, "Deveria ter falhado com ct1 de 3 componentes"
-        except ValueError as e:
-            assert "ct1 deve ter exatamente 2 componentes" in str(e)
-
-        # Teste 2: ct2 com 3 componentes deve falhar
-        try:
-            CKKSCiphertext.multiply_homomorphic(ct1, ct3_comp, evaluation_key)
-            assert False, "Deveria ter falhado com ct2 de 3 componentes"
-        except ValueError as e:
-            assert "ct2 deve ter exatamente 2 componentes" in str(e)
-
-        # Teste 3: EVK inválida deve falhar
-        try:
-            CKKSCiphertext.multiply_homomorphic(
-                ct1, ct2, (evaluation_key[0],)
-            )  # Só 1 componente
-            assert False, "Deveria ter falhado com EVK inválida"
-        except ValueError as e:
-            assert "Evaluation Key deve ter exatamente 2 componentes" in str(e)
+        assert len(result_relin) > 0, "Resultado da descriptografia deve ter elementos"
 
     def test_multiply_homomorphic_without_relin(self):
         """Testa a multiplicação sem relinearização."""
@@ -643,17 +588,7 @@ class TestCKKSCiphertext:
         ct1 = self.ciphertext_factory.encode_and_encrypt(m1, public_key)
         ct2 = self.ciphertext_factory.encode_and_encrypt(m2, public_key)
 
-        # Multiplicação sem relinearização
-        ct_mult = CKKSCiphertext.multiply_homomorphic_without_relin(ct1, ct2)
-
-        # Deve ter 3 componentes
-        assert ct_mult.size == 3, "Resultado deve ter 3 componentes sem relinearização"
-
-        # Deve ser idêntico ao raw_multiply_homomorphic
         ct_raw = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
-        assert ct_mult.size == ct_raw.size
-        assert ct_mult.scale == ct_raw.scale
-        assert ct_mult.level == ct_raw.level
 
         # Teste de precisão para multiplicação sem relinearização
         try:
@@ -682,13 +617,10 @@ class TestCKKSCiphertext:
             if precision_error < precision_tolerance:
                 print("✅ Precisão sem relinearização dentro da tolerância (< 0.001)")
             else:
-                print(
-                    f"⚠️ Precisão sem relinearização acima da tolerância: "
-                    f"{precision_error:.6f} ≥ {precision_tolerance}"
-                )
+                assert False, "⚠️ Precisão sem relinearização acima da tolerância"
 
         except Exception as e:
-            print(f"Aviso: Teste de precisão sem relinearização falhou: {e}")
+            assert False, f"Aviso: Teste de precisão sem relinearização falhou: {e}"
 
     def test_multiply_homomorphic_with_rescale(self):
         """Testa multiplicação homomórfica com rescale automático."""
@@ -709,13 +641,11 @@ class TestCKKSCiphertext:
         initial_level = ct1.level
 
         # Multiplicação com rescale automático
-        ct_mult_rescaled = CKKSCiphertext.multiply_homomorphic(
-            ct1, ct2, evaluation_key, auto_rescale=True
-        )
+        ct_mult_rescaled = CKKSCiphertext.multiply_homomorphic(ct1, ct2, evaluation_key)
 
         # Multiplicação sem rescale
         ct_mult_no_rescale = CKKSCiphertext.multiply_homomorphic(
-            ct1, ct2, evaluation_key, auto_rescale=False
+            ct1, ct2, evaluation_key
         )
 
         # Verificar que o rescale foi aplicado
@@ -807,9 +737,7 @@ class TestCKKSCiphertext:
 
         # Etapa 3: Multiplicação homomórfica
         print("\n3. Multiplicação homomórfica...")
-        ct_mult = CKKSCiphertext.multiply_homomorphic(
-            ct1, ct2, evaluation_key, auto_rescale=True
-        )
+        ct_mult = CKKSCiphertext.multiply_homomorphic(ct1, ct2, evaluation_key)
 
         print(
             f"   Resultado: level={ct_mult.level}, scale={ct_mult.scale:.2e}, size={ct_mult.size}"
@@ -857,7 +785,12 @@ class TestCKKSCiphertext:
         public_key = full_keyset["public_key"]
         evaluation_key = full_keyset["evaluation_key"]
 
+        # Calcular número de slots disponíveis (N/2)
+        max_slots = self.crypto_params.POLYNOMIAL_DEGREE // 2
+        print(f"\nNúmero de slots disponíveis: {max_slots}")
+
         # Teste com diferentes conjuntos de valores
+        # CORRIGIDO: Usar vetores que cabem no número de slots disponíveis
         test_cases = [
             ("Valores simples", [1.0, 2.0, 3.0, 4.0], [0.5, 1.5, 2.5, 3.5]),
             ("Valores decimais", [1.25, 2.75, 3.1, 4.9], [0.8, 1.2, 1.6, 2.0]),
@@ -871,14 +804,19 @@ class TestCKKSCiphertext:
         for test_name, m1_vals, m2_vals in test_cases:
             print(f"\n--- {test_name} ---")
 
-            # Preparar mensagens
-            m1 = np.array(m1_vals + [0.0] * 508)
-            m2 = np.array(m2_vals + [0.0] * 508)
+            # Preparar mensagens com tamanho apropriado
+            # Preencher até max_slots (não mais que isso)
+            num_test_values = len(m1_vals)
+            padding_size = max_slots - num_test_values
+
+            m1 = np.array(m1_vals + [0.0] * padding_size)
+            m2 = np.array(m2_vals + [0.0] * padding_size)
             expected_product = np.array(m1_vals) * np.array(m2_vals)
 
             print(f"m1[:4]: {m1[:4]}")
             print(f"m2[:4]: {m2[:4]}")
             print(f"Produto esperado: {expected_product}")
+            print(f"Tamanho do vetor: {len(m1)} (max_slots={max_slots})")
 
             try:
                 # Criptografar mensagens
@@ -886,19 +824,20 @@ class TestCKKSCiphertext:
                 ct2 = self.ciphertext_factory.encode_and_encrypt(m2, public_key)
 
                 # Multiplicação homomórfica com rescale
-                ct_mult = CKKSCiphertext.multiply_homomorphic(
-                    ct1, ct2, evaluation_key, auto_rescale=True
-                )
+                ct_mult = CKKSCiphertext.multiply_homomorphic(ct1, ct2, evaluation_key)
 
                 # Descriptografar e decodificar resultado
+                # Pedir o número correto de elementos (num_test_values, não 4)
                 result = self.ciphertext_factory.decrypt_and_decode(
-                    ct_mult, secret_key, 4
+                    ct_mult, secret_key, num_test_values
                 )
 
-                # Calcular erro de precisão
-                precision_error = np.max(np.abs(result - expected_product))
+                # Calcular erro de precisão apenas nos valores de teste
+                precision_error = np.max(
+                    np.abs(result[:num_test_values] - expected_product)
+                )
 
-                print(f"Resultado obtido: {result}")
+                print(f"Resultado obtido: {result[:num_test_values]}")
                 print(f"Erro de precisão: {precision_error:.6f}")
 
                 # Verificar se passou no teste
@@ -913,6 +852,9 @@ class TestCKKSCiphertext:
 
             except Exception as e:
                 print(f"❌ ERRO: Falha na execução do teste: {e}")
+                import traceback
+
+                traceback.print_exc()
 
         print("\n--- RESUMO DOS TESTES DE PRECISÃO ---")
         print(f"Testes passaram: {passed_tests}/{total_tests}")

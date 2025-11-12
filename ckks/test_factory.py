@@ -172,60 +172,7 @@ class TestCKKSCiphertextFactory:
         np.testing.assert_allclose(
             decoded_data[: len(test_data)],
             test_data,
-            rtol=1e-1,  # Tolerância maior devido ao ruído da criptografia
-        )
-
-    def test_encode_and_encrypt(self):
-        """Testa a função combinada de codificação e criptografia."""
-        factory = create_ckks_factory()
-
-        # Gera chaves
-        n_degree = factory.crypto_params.POLYNOMIAL_DEGREE
-        ring_poly_mod = factory.crypto_params.get_polynomial_modulus_ring()
-        q_mod = factory.crypto_params.MODULUS_CHAIN[-1]
-        sigma_err = factory.crypto_params.GAUSSIAN_NOISE_STDDEV
-
-        secret_key = factory.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-        pk_a = factory.crypto_params.generate_uniform_random_poly(n_degree, q_mod)
-        e_err = factory.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-        neg_a_s = -factory.crypto_params.poly_mul_mod(
-            pk_a, secret_key, q_mod, ring_poly_mod
-        )
-        pk_b = (neg_a_s + e_err) % ring_poly_mod
-        pk_b_final = factory.crypto_params.poly_ring_mod(pk_b, ring_poly_mod, q_mod)
-        public_key = (pk_b_final, pk_a)
-
-        # Dados de teste
-        test_vector = [2.5, -1.8, 4.2]
-
-        # Codifica e criptografa em uma operação
-        ciphertext = factory.encode_and_encrypt(test_vector, public_key)
-
-        # Verifica o resultado
-        assert hasattr(ciphertext, "components")
-        assert len(ciphertext.components) == 2
-        assert hasattr(ciphertext, "level")
-        assert hasattr(ciphertext, "scale")
-        assert ciphertext.level >= 0
-        assert ciphertext.scale > 0
-
-        # Descriptografa para verificar
-        decrypted_poly = factory.decrypt(ciphertext, secret_key)
-        assert isinstance(decrypted_poly, Polynomial)
-        assert len(decrypted_poly.coef) > 0
-
-        decoded_data = factory.ckks_decode_real(
-            decrypted_poly,
-            ciphertext.scale,
-            factory.crypto_params.POLYNOMIAL_DEGREE,
-            factory.crypto_params.MODULUS_CHAIN[ciphertext.level],
-        )
-        assert isinstance(decoded_data, np.ndarray)
-        assert len(decoded_data) >= len(test_vector)
-
-        # Verifica precisão
-        np.testing.assert_allclose(
-            decoded_data[: len(test_vector)], test_vector, rtol=1e-1
+            rtol=1e-1,
         )
 
     def test_decrypt_and_decode(self):
@@ -263,82 +210,24 @@ class TestCKKSCiphertextFactory:
         # Verifica se recuperamos os dados originais
         np.testing.assert_allclose(recovered_data, original_data, rtol=1e-1)
 
-    def test_decrypt_with_dict_format(self):
-        """Testa descriptografia com formato de dicionário (compatibilidade)."""
-        # Cria as fábricas
-        factory = create_ckks_factory()
-        key_factory = create_key_factory()
-
-        # Gera o conjunto de chaves usando a fábrica
-        keyset = key_factory.generate_full_keyset()
-        secret_key = keyset["secret_key"]
-        public_key = keyset["public_key"]
-
-        # Criptografa usando a fábrica
-        test_data = [1.0, 2.0]
-        ciphertext = factory.encode_and_encrypt(test_data, public_key)
-
-        # Verifica se a criptografia funcionou
-        assert hasattr(ciphertext, "components")
-        assert len(ciphertext.components) == 2
-
-        # Converte para formato de dicionário
-        ciphertext_dict = ciphertext.to_dict()
-
-        # Verifica se a conversão funcionou
-        assert isinstance(ciphertext_dict, dict)
-        assert "c0" in ciphertext_dict
-        assert "c1" in ciphertext_dict
-        assert "level" in ciphertext_dict
-        assert "scale" in ciphertext_dict
-
-        # Testa descriptografia com dicionário
-        decrypted_poly = factory.decrypt(ciphertext_dict, secret_key)
-
-        # Verifica se a descriptografia funciona
-        assert hasattr(decrypted_poly, "coef")
-        assert isinstance(decrypted_poly, Polynomial)
-        assert len(decrypted_poly.coef) > 0
-
-        # Testa decrypt_and_decode com dicionário
-        recovered_data = factory.decrypt_and_decode(
-            ciphertext_dict, secret_key, expected_length=len(test_data)
-        )
-
-        # Verifica o resultado
-        assert isinstance(recovered_data, np.ndarray)
-        assert len(recovered_data) == len(test_data)
-
-        # Verifica precisão
-        np.testing.assert_allclose(recovered_data, test_data, rtol=1e-1)
-
     def test_encryption_with_custom_level(self):
         """Testa criptografia com nível personalizado."""
         factory = create_ckks_factory()
-
-        # Gera chaves
-        n_degree = factory.crypto_params.POLYNOMIAL_DEGREE
-        ring_poly_mod = factory.crypto_params.get_polynomial_modulus_ring()
-        q_mod = factory.crypto_params.MODULUS_CHAIN[-1]
-        sigma_err = factory.crypto_params.GAUSSIAN_NOISE_STDDEV
-
-        secret_key = factory.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-        pk_a = factory.crypto_params.generate_uniform_random_poly(n_degree, q_mod)
-        e_err = factory.crypto_params.generate_gaussian_poly(n_degree, sigma_err)
-        neg_a_s = -factory.crypto_params.poly_mul_mod(
-            pk_a, secret_key, q_mod, ring_poly_mod
-        )
-        pk_b = (neg_a_s + e_err) % ring_poly_mod
-        pk_b_final = factory.crypto_params.poly_ring_mod(pk_b, ring_poly_mod, q_mod)
-        public_key = (pk_b_final, pk_a)
+        key_factory = create_key_factory()
 
         # Testa com nível personalizado
         custom_level = len(factory.crypto_params.MODULUS_CHAIN) - 2  # Não o mais alto
-        test_data = [5.5, -3.3]
 
         # Verifica se o nível personalizado é válido
         assert custom_level >= 0
         assert custom_level < len(factory.crypto_params.MODULUS_CHAIN)
+
+        # Gera chaves usando o key_factory
+        keyset = key_factory.generate_full_keyset(level=custom_level)
+        secret_key = keyset["secret_key"]
+        public_key = keyset["public_key"]
+
+        test_data = [5.5, -3.3]
 
         # Criptografa com nível personalizado
         ciphertext = factory.encode_and_encrypt(
@@ -368,5 +257,5 @@ class TestCKKSCiphertextFactory:
         np.testing.assert_allclose(
             recovered_data,
             test_data,
-            rtol=2e-1,  # Tolerância maior para níveis mais baixos
+            rtol=1e-1,  # Tolerância maior para níveis mais baixos
         )

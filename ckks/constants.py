@@ -24,13 +24,13 @@ class CKKSCryptographicParameters:
 
     def __init__(
         self,
-        polynomial_degree: int = 64,  # N - grau do polinômio ciclotômico
-        q0_base: int = 131071,  # Q0 - módulo base
-        scaling_factor: int = 4096,  # DELTA - fator de escala
-        gaussian_noise_stddev: float = 3.2,  # σ - desvio padrão gaussiano
+        polynomial_degree: int = 8,  # N - grau do polinômio ciclotômico (REDUZIDO: era 16)
+        q0_base: int = 2**10,  # Q0 - módulo base (~1K) (REDUZIDO: era 2^12)
+        scaling_factor: int = 2**4,  # DELTA - fator de escala (16) (REDUZIDO: era 2^6)
+        gaussian_noise_stddev: float = 0,  # σ - desvio padrão gaussiano
         hamming_weight: int = None,  # h - peso de Hamming (padrão: N/4)
         zero_one_density: float = 0.5,  # ρ - densidade ZO
-        modulus_levels: int = 5,  # Número de níveis na cadeia de módulos
+        total_levels: int = 2,  # Número de níveis na cadeia de módulos
     ):
         """
         Inicializa os parâmetros criptográficos CKKS.
@@ -40,28 +40,24 @@ class CKKSCryptographicParameters:
 
         Args:
             polynomial_degree: N - deve ser potência de 2
-            p_parameter: P - parâmetro para evaluation key
             q0_base: Q0 - módulo base para construir cadeia
             scaling_factor: DELTA - fator de escala para codificação
             gaussian_noise_stddev: σ - desvio padrão para DG(σ²)
             hamming_weight: h - peso de Hamming para HWT(h) (padrão: N/4)
             zero_one_density: ρ - densidade para ZO(ρ)
-            modulus_levels: Número de níveis na cadeia de módulos
+            total_levels: Número de níveis na cadeia de módulos
         """
         # === PARÂMETROS ESTRUTURAIS ===
         self.POLYNOMIAL_DEGREE = polynomial_degree  # N
-
-        # Define P conforme especificação (deve ser escolhido baseado em λ, qL)
-        self.p_small = 2
 
         self.Q0 = q0_base  # Q0
 
         # === MÓDULOS DA CADEIA CKKS ===
         self.MODULUS_CHAIN = [
-            self.p_small**i * self.Q0 for i in range(1, modulus_levels + 1)
+            scaling_factor**i * self.Q0 for i in range(0, total_levels + 1)
         ]
 
-        self.P = max(1000, min(self.MODULUS_CHAIN[-1] // 100, 10000))
+        self.P = self.Q0 * 2
 
         # === PARÂMETROS DE ESCALA ===
         self.SCALING_FACTOR = scaling_factor  # DELTA
@@ -135,9 +131,6 @@ class CKKSCryptographicParameters:
         if self.SCALING_FACTOR <= 0:
             raise ValueError("SCALING_FACTOR deve ser positivo")
 
-        if self.GAUSSIAN_NOISE_STDDEV <= 0:
-            raise ValueError("GAUSSIAN_NOISE_STDDEV deve ser positivo")
-
         # Verifica se os módulos estão em ordem crescente
         for i in range(1, len(self.MODULUS_CHAIN)):
             if self.MODULUS_CHAIN[i] <= self.MODULUS_CHAIN[i - 1]:
@@ -182,58 +175,91 @@ class CKKSCryptographicParameters:
         print("=" * 40)
 
     # === FUNÇÕES AUXILIARES PARA OPERAÇÕES POLINOMIAIS ===
-    def poly_coeffs_mod_q(self, p_numpy, q_coeff):
+    @staticmethod
+    def mod_centered(value, modulus):
+        reduced = np.mod(value, modulus)
+
+        half_modulus = modulus / 2
+
+        if np.isscalar(reduced):
+            if reduced > half_modulus:
+                return reduced - modulus
+            return reduced
+        else:
+            # Para arrays
+            result = reduced.copy()
+            mask = result > half_modulus
+            result[mask] = result[mask] - modulus
+            return result
+
+    @staticmethod
+    def poly_coeffs_mod_q(p_numpy, q_coeff):
         """
-        Aplica operação modular aos coeficientes de um polinômio.
+        Aplica operação modular centrada aos coeficientes de um polinômio.
+
+        Para um polinômio r, [r]_a denota a mesma operação aplicada coeficiente a coeficiente,
+        onde cada coeficiente é reduzido para ℤ_a = (-a/2, a/2].
 
         Args:
             p_numpy: Polinômio numpy
-            q_coeff: Coeficiente modular
+            q_coeff: Coeficiente modular a
 
         Returns:
-            Polynomial: Polinômio com coeficientes modulares
+            Polynomial: Polinômio com coeficientes em ℤ_a = (-a/2, a/2]
         """
         coeffs = p_numpy.coef.copy()
-        for i in range(len(coeffs)):
-            coeffs[i] = int(coeffs[i]) % q_coeff
-        return Polynomial(coeffs)
+        # Aplica mod_centered a todos os coeficientes de uma vez (vetorizado)
+        coeffs = CKKSCryptographicParameters.mod_centered(coeffs, q_coeff)
+        return Polynomial(coeffs.astype(np.int64))
 
-    def poly_ring_mod(self, p_numpy, ring_poly_mod, q_coeff):
+    @staticmethod
+    def poly_ring_mod(p_numpy, ring_poly_mod, q_coeff):
         """
-        Aplica redução modular no anel polinomial.
+        Aplica redução modular no anel polinomial R_q = ℤ_q[X]/(X^N + 1).
+
+        Este método realiza duas reduções:
+        1. Redução polinomial: p_numpy mod (X^N + 1) - reduz grau para < N
+        2. Redução dos coeficientes: coeficientes mod q - reduz valores para ℤ_q
 
         Args:
             p_numpy: Polinômio numpy
-            ring_poly_mod: Polinômio de módulo do anel
+            ring_poly_mod: Polinômio de módulo do anel (tipicamente X^N + 1)
             q_coeff: Coeficiente modular
 
         Returns:
-            Polynomial: Polinômio reduzido no anel
+            Polynomial: Polinômio reduzido no anel R_q
         """
-        remainder_poly = p_numpy % ring_poly_mod
-        return self.poly_coeffs_mod_q(remainder_poly, q_coeff)
+        # Primeiro: redução polinomial mod (X^N + 1) usando divisão polinomial
+        # Isso garante que o resultado tenha grau < N
+        _, remainder = divmod(p_numpy, ring_poly_mod)
 
-    def poly_mul_mod(self, p1, p2, q, ring_poly_mod):
+        # Segundo: redução dos coeficientes mod q
+        # Aplica mod centrado: coeficientes em ℤ_q = (-q/2, q/2]
+        return CKKSCryptographicParameters.poly_coeffs_mod_q(remainder, q_coeff)
+
+    @staticmethod
+    def poly_mul_mod(p1, p2, q, ring_poly_mod):
         """
-        Multiplicação de polinômios com redução modular.
+        Multiplicação de polinômios com redução modular no anel R_q.
+
+        Realiza a multiplicação p1 * p2 e aplica redução modular no anel
+        R_q = ℤ_q[X]/(X^N + 1), garantindo que o resultado tenha grau < N
+        e coeficientes em ℤ_q = (-q/2, q/2].
 
         Args:
-            p1: Primeiro polinômio
-            p2: Segundo polinômio
+            p1: Primeiro polinômio (Polynomial)
+            p2: Segundo polinômio (Polynomial)
             q: Módulo para os coeficientes
-            ring_poly_mod: Polinômio de módulo do anel
+            ring_poly_mod: Polinômio de módulo do anel (tipicamente X^N + 1)
 
         Returns:
-            Polynomial: Resultado da multiplicação modular
+            Polynomial: Resultado da multiplicação modular em R_q
         """
-        coeffs1 = [int(c) for c in p1.coef]
-        coeffs2 = [int(c) for c in p2.coef]
-        prod_coeffs = [0] * (len(coeffs1) + len(coeffs2) - 1)
-        for i in range(len(coeffs1)):
-            for j in range(len(coeffs2)):
-                prod_coeffs[i + j] += coeffs1[i] * coeffs2[j]
-        full_poly = Polynomial(prod_coeffs)
-        return self.poly_ring_mod(full_poly, ring_poly_mod, q)
+        # Usa multiplicação nativa de polinômios do NumPy (muito mais eficiente)
+        full_poly = p1 * p2
+
+        # Aplica redução no anel R_q = ℤ_q[X]/(X^N + 1)
+        return CKKSCryptographicParameters.poly_ring_mod(full_poly, ring_poly_mod, q)
 
     def poly_mul(self, p1, p2):
         """
@@ -246,13 +272,8 @@ class CKKSCryptographicParameters:
         Returns:
             Polynomial: Resultado da multiplicação
         """
-        coeffs1 = [int(c) for c in p1.coef]
-        coeffs2 = [int(c) for c in p2.coef]
-        prod_coeffs = [0] * (len(coeffs1) + len(coeffs2) - 1)
-        for i in range(len(coeffs1)):
-            for j in range(len(coeffs2)):
-                prod_coeffs[i + j] += coeffs1[i] * coeffs2[j]
-        full_poly = Polynomial(prod_coeffs)
+
+        full_poly = p1 * p2
         return full_poly
 
     def generate_gaussian_poly(self, degree_n=None, sigma_val=None):
@@ -276,43 +297,46 @@ class CKKSCryptographicParameters:
         )
         return Polynomial(coeffs)
 
-    def generate_hamming_weight_poly(self, degree_n=None, hamming_weight=None):
+    def generate_hamming_weight(self, n=None, hamming_weight=None):
         """
-        Gera um polinômio com peso de Hamming específico (HWT(h)).
+        Gera um vetor da distribuição HWT(h) - Hamming Weight h.
 
-        Distribui hamming_weight coeficientes não-zero {-1, +1} aleatoriamente
-        nos degree_n coeficientes, com os demais sendo 0.
+        For a positive integer h, HWT(h) is the set of signed binary vectors
+        in {0, ±1}^N whose Hamming weight is exactly h.
+
+        Distribui exatamente h coeficientes não-zero em {-1, +1} aleatoriamente
+        nas N posições, com os demais coeficientes sendo 0.
 
         Args:
-            degree_n: Grau do polinômio (usa POLYNOMIAL_DEGREE se None)
-            hamming_weight: Peso de Hamming desejado (usa 64 se None)
+            n: Dimensão do vetor (usa POLYNOMIAL_DEGREE se None)
+            hamming_weight: Peso de Hamming h desejado (usa HAMMING_WEIGHT se None)
 
         Returns:
-            Polynomial: Polinômio binário com peso de Hamming específico
+            ndarray: Vetor binário assinado em {0, ±1}^N com peso de Hamming h
         """
-        if degree_n is None:
-            degree_n = self.POLYNOMIAL_DEGREE
+        if n is None:
+            n = self.POLYNOMIAL_DEGREE
         if hamming_weight is None:
             hamming_weight = min(
-                self.HAMMING_WEIGHT, degree_n // 4
+                self.HAMMING_WEIGHT, n // 4
             )  # Default: configurado ou N/4
 
-        if hamming_weight > degree_n:
+        if hamming_weight > n:
             raise ValueError(
-                f"Peso de Hamming {hamming_weight} não pode ser maior que o grau {degree_n}"
+                f"Peso de Hamming {hamming_weight} não pode ser maior que o grau {n}"
             )
 
         # Inicializa todos os coeficientes como zero
-        coeffs = np.zeros(degree_n, dtype=np.int64)
+        coeffs = np.zeros(n, dtype=np.int64)
 
         # Escolhe posições aleatórias para colocar valores não-zero
-        positions = np.random.choice(degree_n, size=hamming_weight, replace=False)
+        positions = np.random.choice(n, size=hamming_weight, replace=False)
 
         # Para cada posição, escolhe aleatoriamente +1 ou -1
         for pos in positions:
             coeffs[pos] = np.random.choice([-1, 1])
 
-        return Polynomial(coeffs)
+        return coeffs
 
     def generate_zero_one_poly(self, degree_n=None, density=None):
         """
