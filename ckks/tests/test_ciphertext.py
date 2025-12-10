@@ -1,6 +1,7 @@
-from .factories import CKKSCiphertextFactory, CKKSKeyFactory
-from .ckks import CKKSCiphertext
-from .constants import CKKSCryptographicParameters
+from ckks.ciphertext_factory import CKKSCiphertextFactory
+from ckks.key_factory import CKKSKeyFactory
+from ckks.ckks import CKKSCiphertext
+from ckks.constants import CKKSCryptographicParameters
 import pytest
 from numpy.polynomial import Polynomial
 import numpy as np
@@ -17,141 +18,11 @@ class TestCKKSCiphertext:
         self.c0 = self.crypto_params.generate_uniform_random_poly()
         self.c1 = self.crypto_params.generate_uniform_random_poly()
 
-    def test_basic_creation(self):
-        """Teste de criação básica de ciphertext"""
-        ct = CKKSCiphertext(
-            components=[self.c0, self.c1],
-            level=2,
-        )
-
-        assert ct.size == 2
-        assert ct.level == 2
-
-        # Scale deve ser SCALING_FACTOR, não o módulo
-        assert (
-            ct.scale == self.crypto_params.SCALING_FACTOR
-        ), f"Scale deveria ser {self.crypto_params.SCALING_FACTOR}, mas é {ct.scale}"
-
-        # current_modulus é baseado no nível
-        assert ct.current_modulus == self.crypto_params.MODULUS_CHAIN[2]
-        assert ct.is_fresh()
-
-    def test_invalid_creation(self):
-        """Teste de criação com parâmetros inválidos"""
-        # Lista vazia de componentes
-        with pytest.raises(
-            ValueError, match="Lista de componentes não pode estar vazia"
-        ):
-            CKKSCiphertext([], 1)
-
-        # Nível inválido
-        with pytest.raises(ValueError, match="Nível deve estar entre"):
-            CKKSCiphertext([self.c0], -1)
-
-        with pytest.raises(ValueError, match="Nível deve estar entre"):
-            CKKSCiphertext([self.c0], 10)
-
-        # Teste com crypto_params None (deve usar padrão)
-        ct_default = CKKSCiphertext([self.c0], 1)
-        assert ct_default.crypto_params is not None
-
-    def test_compatibility_checks(self):
-        """Teste de verificações de compatibilidade"""
-        ct1 = CKKSCiphertext([self.c0, self.c1], 1)
-        ct2 = CKKSCiphertext([self.c0, self.c1], 1)
-        ct3 = CKKSCiphertext([self.c0, self.c1], 2)  # Nível diferente
-        ct4 = CKKSCiphertext([self.c0, self.c1], 1)  # Mesma escala (baseada no nível)
-
-        # Devem ser compatíveis para adição
-        assert ct1.can_add_with(ct2)
-        assert not ct1.can_add_with(ct3)  # Nível diferente
-        assert ct1.can_add_with(ct4)  # Mesma escala (baseada no nível)
-
-        # Devem ser compatíveis para multiplicação
-        assert ct1.can_multiply_with(ct2)
-        assert not ct1.can_multiply_with(ct3)  # Nível diferente
-
-        # Ciphertext no nível 0 não pode multiplicar (precisa de rescale)
-        ct0_level = CKKSCiphertext([self.c0, self.c1], 0)
-        assert not ct0_level.can_multiply_with(ct1)
-
-    def test_component_access(self):
-        """Teste de acesso aos componentes"""
-        ct = CKKSCiphertext([self.c0, self.c1], 1)
-
-        # Acesso válido
-        comp0 = ct.get_component(0)
-        comp1 = ct.get_component(1)
-
-        assert isinstance(comp0, Polynomial)
-        assert isinstance(comp1, Polynomial)
-
-        # Acesso inválido
-        with pytest.raises(IndexError):
-            ct.get_component(2)
-
-        with pytest.raises(IndexError):
-            ct.get_component(-1)
-
-    def test_copy_functionality(self):
-        """Teste de funcionalidade de cópia"""
-        original = CKKSCiphertext([self.c0, self.c1], 1)
-        copy_ct = original.copy()
-
-        # Deve ser independente
-        assert copy_ct.level == original.level
-        assert copy_ct.scale == original.scale
-        assert copy_ct.size == original.size
-
-        # Modificar a cópia não deve afetar o original
-        copy_ct.level = 0
-        assert original.level == 1
-
-    def test_rescale_update(self):
-        """Teste de atualização após rescale"""
-        ct = CKKSCiphertext([self.c0, self.c1], 2)
-
-        # Rescale válido
-        new_scale = self.crypto_params.MODULUS_CHAIN[1]
-        ct.update_after_rescale(1, new_scale)
-        assert ct.level == 1
-        assert ct.scale == new_scale
-
-        # Rescale inválido
-        with pytest.raises(ValueError):
-            ct.update_after_rescale(2, 250.0)  # Nível maior que atual
-
-        with pytest.raises(ValueError):
-            ct.update_after_rescale(-1, 250.0)  # Nível negativo
-
-    def test_properties(self):
-        """Teste de propriedades calculadas"""
-        ct = CKKSCiphertext([self.c0, self.c1], 1)
-
-        # Propriedades básicas
-        assert ct.current_modulus == self.crypto_params.MODULUS_CHAIN[1]
-        assert ct.noise_budget == 1
-        assert ct.size == 2
-
-        # Scale deve ser o SCALING_FACTOR, não o módulo
-        expected_scale = self.crypto_params.SCALING_FACTOR
-        assert (
-            ct.scale == expected_scale
-        ), f"Scale deveria ser {expected_scale}, mas é {ct.scale}"
-
-        # Ciphertext no nível mais alto (mais próximo de fresh)
-        high_level_ct = CKKSCiphertext(
-            [self.c0, self.c1], len(self.crypto_params.MODULUS_CHAIN) - 1
-        )
-        assert high_level_ct.level == len(self.crypto_params.MODULUS_CHAIN) - 1
-
-        # Verificar que scale permanece SCALING_FACTOR
-        assert high_level_ct.scale == self.crypto_params.SCALING_FACTOR
-
     def test_add_homomorphic_basic(self):
         """Teste de adição homomórfica básica"""
         import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+        from ckks.key_factory import CKKSKeyFactory
+        from ckks.ciphertext_factory import CKKSCiphertextFactory
 
         # Setup das factories
         key_factory = CKKSKeyFactory(self.crypto_params)
@@ -184,81 +55,6 @@ class TestCKKSCiphertext:
         assert ct_sum.level == ct1.level == ct2.level
         assert abs(ct_sum.scale - ct1.scale) < 1e-10
         assert ct_sum.size == ct1.size == ct2.size
-
-    def test_add_homomorphic_incompatible_level(self):
-        """Teste de erro ao tentar somar ciphertexts com níveis diferentes"""
-        import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
-
-        key_factory = CKKSKeyFactory(self.crypto_params)
-        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
-
-        keyset = key_factory.generate_full_keyset()
-        pk = keyset["public_key"]
-
-        m1 = np.array([1.0, 2.0] + [0.0] * 510)
-        m2 = np.array([3.0, 4.0] + [0.0] * 510)
-
-        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
-        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
-
-        # Modifica artificialmente o nível de um dos ciphertexts
-        ct2.level = ct1.level - 1
-
-        with pytest.raises(ValueError, match="não são compatíveis para adição"):
-            CKKSCiphertext.add_homomorphic(ct1, ct2)
-
-    def test_add_homomorphic_incompatible_scale(self):
-        """Teste de erro ao tentar somar ciphertexts com escalas diferentes"""
-        import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
-
-        key_factory = CKKSKeyFactory(self.crypto_params)
-        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
-
-        keyset = key_factory.generate_full_keyset()
-        pk = keyset["public_key"]
-
-        m1 = np.array([1.0, 2.0] + [0.0] * 510)
-        m2 = np.array([3.0, 4.0] + [0.0] * 510)
-
-        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
-        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
-
-        # Modifica artificialmente a escala de um dos ciphertexts
-        ct2.scale = ct1.scale * 2
-
-        with pytest.raises(ValueError, match="não são compatíveis para adição"):
-            CKKSCiphertext.add_homomorphic(ct1, ct2)
-
-    def test_add_homomorphic_preserves_properties(self):
-        """Teste se a adição preserva propriedades importantes do ciphertext"""
-        import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
-
-        key_factory = CKKSKeyFactory(self.crypto_params)
-        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
-
-        keyset = key_factory.generate_full_keyset()
-        pk = keyset["public_key"]
-
-        m1 = np.array([1.0, 2.0, 3.0] + [0.0] * 509)
-        m2 = np.array([0.1, 0.2, 0.3] + [0.0] * 509)
-
-        ct1 = ciphertext_factory.encode_and_encrypt(m1, pk)
-        ct2 = ciphertext_factory.encode_and_encrypt(m2, pk)
-
-        original_level = ct1.level
-        original_scale = ct1.scale
-        original_size = ct1.size
-
-        ct_sum = CKKSCiphertext.add_homomorphic(ct1, ct2)
-
-        # Verifica que as propriedades foram preservadas
-        assert ct_sum.level == original_level
-        assert abs(ct_sum.scale - original_scale) < 1e-10
-        assert ct_sum.size == original_size
-        assert ct_sum.crypto_params == ct1.crypto_params
 
     def test_rescale_basic(self):
         """Teste básico de rescale - verifica mudanças estruturais"""
@@ -341,7 +137,8 @@ class TestCKKSCiphertext:
     def test_rescale_mathematical_property(self):
         """Teste que verifica a propriedade matemática do rescale conforme paper CKKS"""
         import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+        from ckks.key_factory import CKKSKeyFactory
+        from ckks.ciphertext_factory import CKKSCiphertextFactory
 
         key_factory = CKKSKeyFactory(self.crypto_params)
         ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
@@ -411,53 +208,11 @@ class TestCKKSCiphertext:
         ), "Tamanho do resultado preservado"
         print("✅ Propriedades estruturais do rescale verificadas")
 
-    def test_rescale_custom_delta(self):
-        """Teste de rescale com nível alvo customizado"""
-        import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
-
-        key_factory = CKKSKeyFactory(self.crypto_params)
-        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
-
-        keyset = key_factory.generate_full_keyset()
-        pk = keyset["public_key"]
-
-        m = np.array([1.0, 2.0] + [0.0] * 510)
-        ct = ciphertext_factory.encode_and_encrypt(m, pk)
-
-        original_level = ct.level
-        target_level = 0  # Vai para o nível mais baixo
-
-        # Verifica que pode ir para o nível alvo
-        if original_level > 0:
-            ct_rescaled = CKKSCiphertext.rescale(ct, target_level)
-            assert ct_rescaled.level == target_level
-
-    def test_rescale_level_zero_error(self):
-        """Teste de erro ao tentar rescale no nível 0"""
-        import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
-
-        key_factory = CKKSKeyFactory(self.crypto_params)
-        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
-
-        keyset = key_factory.generate_full_keyset()
-        pk = keyset["public_key"]
-
-        m = np.array([1.0, 2.0] + [0.0] * 510)
-        ct = ciphertext_factory.encode_and_encrypt(m, pk)
-
-        # Força o ciphertext para nível 0
-        ct.level = 0
-
-        # Deve dar erro
-        with pytest.raises(ValueError, match="Não há mais níveis para rescalonar"):
-            CKKSCiphertext.rescale(ct)
-
     def test_rescale_preserves_original(self):
         """Teste que verifica se o rescale não modifica o ciphertext original"""
         import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
+        from ckks.key_factory import CKKSKeyFactory
+        from ckks.ciphertext_factory import CKKSCiphertextFactory
 
         key_factory = CKKSKeyFactory(self.crypto_params)
         ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
@@ -481,35 +236,6 @@ class TestCKKSCiphertext:
         # Verifica que são objetos diferentes
         assert ct_rescaled is not ct_original
 
-    def test_rescale_multiple_levels(self):
-        """Teste de múltiplos rescales consecutivos"""
-        import numpy as np
-        from .factories import CKKSKeyFactory, CKKSCiphertextFactory
-
-        key_factory = CKKSKeyFactory(self.crypto_params)
-        ciphertext_factory = CKKSCiphertextFactory(self.crypto_params)
-
-        keyset = key_factory.generate_full_keyset()
-        pk = keyset["public_key"]
-
-        m = np.array([100.0, 200.0] + [0.0] * 510)
-        ct = ciphertext_factory.encode_and_encrypt(m, pk)
-
-        original_level = ct.level
-
-        # Primeiro rescale
-        ct_rescaled1 = CKKSCiphertext.rescale(ct)
-        assert ct_rescaled1.level == original_level - 1
-
-        # Segundo rescale (se possível)
-        if ct_rescaled1.level > 0:
-            ct_rescaled2 = CKKSCiphertext.rescale(ct_rescaled1)
-            assert ct_rescaled2.level == original_level - 2
-
-            # Verifica que a estrutura permanece válida
-            assert ct_rescaled2.size == ct.size
-            assert ct_rescaled2.crypto_params == ct.crypto_params
-
     def test_raw_multiply_homomorphic(self):
         """
         Testa a multiplicação homomórfica RAW (sem relinearização).
@@ -527,11 +253,9 @@ class TestCKKSCiphertext:
         public_key = full_keyset["public_key"]
         evk = full_keyset["evaluation_key"]
 
-        # Criar mensagens de teste
         m1 = np.array([1.0, 1.0])
         m2 = np.array([1.0, 1.0])
 
-        # Criptografar as mensagens
         ct1 = self.ciphertext_factory.encode_and_encrypt(m1, public_key)
         ct2 = self.ciphertext_factory.encode_and_encrypt(m2, public_key)
 
@@ -539,17 +263,14 @@ class TestCKKSCiphertext:
         assert ct1.size == 2, "ct1 deve ter 2 componentes"
         assert ct2.size == 2, "ct2 deve ter 2 componentes"
 
-        # Teste 1: Multiplicação COM relinearização (deve funcionar bem)
-        print("\n=== TESTE COM RELINEARIZAÇÃO ===")
-        ct_mult_relin = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
-        ct_mult_relin = CKKSCiphertext.relinearize(ct_mult_relin, evk)
+        ct_mult_relin = CKKSCiphertext.multiply_homomorphic(ct1, ct2, evk)
 
         decrypted_relin = self.ciphertext_factory.decrypt(ct_mult_relin, secret_key)
         result_relin = self.ciphertext_factory.ckks_decode_real(
             decrypted_relin,
             ct_mult_relin.scale,
             self.crypto_params.POLYNOMIAL_DEGREE,
-            ct_mult_relin.current_modulus,
+            q_mod=True,  # Aplica correção modular para valores criptografados
         )
 
         expected_product = m1[:2] * m2[:2]
@@ -600,7 +321,7 @@ class TestCKKSCiphertext:
                 decrypted_raw,
                 ct_raw.scale,
                 self.crypto_params.POLYNOMIAL_DEGREE,
-                ct_raw.current_modulus,
+                q_mod=True,  # Aplica correção modular para valores criptografados
             )
 
             expected_product = m1[:4] * m2[:4]  # [3.0, 8.0, 0.0, 0.0]

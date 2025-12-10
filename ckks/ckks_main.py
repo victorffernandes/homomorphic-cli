@@ -1,7 +1,8 @@
 import numpy as np
 from .ckks import CKKSCiphertext
 from .constants import CKKSCryptographicParameters
-from .factories import CKKSCiphertextFactory, CKKSKeyFactory
+from .ciphertext_factory import CKKSCiphertextFactory
+from .key_factory import CKKSKeyFactory
 
 # Criação da instância global dos parâmetros
 crypto_params = CKKSCryptographicParameters()
@@ -41,12 +42,12 @@ if __name__ == "__main__":
     keyset = key_factory.generate_full_keyset()
     sk = keyset["secret_key"]
     pk = keyset["public_key"]
-    rlk = keyset["relinearization_key"]
+    evk = keyset["evaluation_key"]
 
     print("Chaves geradas usando CKKSKeyFactory.")
     print("-" * 50)
 
-    num_plaintext_elements = crypto_params.get_maximum_plaintext_slots()
+    num_plaintext_elements = crypto_params.POLYNOMIAL_DEGREE // 2
     m1 = np.array([1, 1, 1, 1] + [0] * (num_plaintext_elements - 4))
     m2 = np.array([0.5, -0.6, 0.7, 0.8] + [0] * (num_plaintext_elements - 4))
 
@@ -80,7 +81,7 @@ if __name__ == "__main__":
     ct2 = ct2_obj.to_dict()
 
     ct_mult_3part = raw_multiply_homomorphic(ct1, ct2, poly_mod_ring, modulus_chain)
-    ct_mult_relin = relinearize(ct_mult_3part, rlk, poly_mod_ring, modulus_chain)
+    ct_mult_relin = relinearize(ct_mult_3part, evk, poly_mod_ring, modulus_chain)
 
     # --- DIAGNÓSTICO INTERMEDIÁRIO ---
     print("\n\n--- DIAGNÓSTICO: Testando o resultado ANTES do rescale ---\n")
@@ -92,9 +93,7 @@ if __name__ == "__main__":
         ct_mult_relin_obj, sk, len(m1)
     )
 
-    print(
-        f"Escala esperada antes do rescale: {crypto_params.get_scaling_factor_squared()}"
-    )
+    print(f"Escala esperada antes do rescale: {crypto_params.SCALING_FACTOR**2}")
     print(f"Resultado esperado (m1*m2): {np.round(m1*m2, 4)[:8]}")
     print(f"Resultado obtido ANTES do rescale: {decoded_vector_before_rescale[:8]}")
 

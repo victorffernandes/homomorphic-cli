@@ -9,9 +9,10 @@ from typing import Tuple
 import numpy as np
 from numpy.polynomial import Polynomial
 
-from .factories import CKKSKeyFactory, CKKSCiphertextFactory, create_key_factory
-from .constants import CKKSCryptographicParameters
-from .ckks import CKKSCiphertext
+from ckks.key_factory import CKKSKeyFactory, create_key_factory
+from ckks.ciphertext_factory import CKKSCiphertextFactory
+from ckks.constants import CKKSCryptographicParameters
+from ckks.ckks import CKKSCiphertext
 
 
 class TestCKKSKeyFactory:
@@ -97,7 +98,7 @@ class TestCKKSKeyFactory:
         assert isinstance(pk_a, Polynomial)
 
     def test_generate_evaluation_key_basic(self):
-        """Testa a geração básica de evaluation key (antiga relinearization key)."""
+        """Testa a geração básica de evaluation key."""
         secret_key = self.key_factory.generate_secret_key()
         eval_key = self.key_factory.generate_evaluation_key(secret_key)
 
@@ -182,10 +183,10 @@ class TestCKKSKeyFactory:
         assert isinstance(public_key, tuple)
         assert len(public_key) == 2
 
-        # Verifica chave de relinearização
-        relin_key = keyset["evaluation_key"]
-        assert isinstance(relin_key, tuple)
-        assert len(relin_key) == 2
+        # Verifica evaluation key
+        evaluation_key = keyset["evaluation_key"]
+        assert isinstance(evaluation_key, tuple)
+        assert len(evaluation_key) == 2
 
         # Verifica que todas as chaves não são zero
         if hasattr(s, "coef"):
@@ -256,7 +257,7 @@ class TestCKKSKeyFactory:
 
         secret_key = keyset["secret_key"]
         public_key = keyset["public_key"]
-        relin_key = keyset["relinearization_key"]
+        evaluation_key = keyset["evaluation_key"]
 
         # Verifica que as chaves foram geradas corretamente
         assert secret_key is not None
@@ -289,9 +290,9 @@ class TestCKKSKeyFactory:
 
         assert keys_consistent, "Chaves do keyset não são consistentes entre si"
 
-        # Verifica que a chave de relinearização é bem formada
-        assert isinstance(relin_key, tuple)
-        assert len(relin_key) == 2
+        # Verifica que a evaluation key é bem formada
+        assert isinstance(evaluation_key, tuple)
+        assert len(evaluation_key) == 2
 
     def test_generate_evaluation_key(self):
         """Testa a geração da Evaluation Key (EVK)."""
@@ -395,7 +396,6 @@ class TestCKKSKeyFactory:
         expected_keys = [
             "secret_key",
             "public_key",
-            "relinearization_key",
             "evaluation_key",
         ]
 
@@ -404,18 +404,14 @@ class TestCKKSKeyFactory:
 
         # Verificar tipos das chaves
         public_key = full_keyset["public_key"]
-        relinearization_key = full_keyset["relinearization_key"]
         evaluation_key = full_keyset["evaluation_key"]
 
         assert len(public_key) == 2, "Chave pública deve ter 2 componentes"
-        assert (
-            len(relinearization_key) == 2
-        ), "Chave de relinearização deve ter 2 componentes"
         assert len(evaluation_key) == 2, "Evaluation key deve ter 2 componentes"
 
-        rlk_b, rlk_a = relinearization_key
-        assert isinstance(rlk_b, Polynomial)
-        assert isinstance(rlk_a, Polynomial)
+        evk_b, evk_a = evaluation_key
+        assert isinstance(evk_b, Polynomial)
+        assert isinstance(evk_a, Polynomial)
 
     def test_relinearization_with_evaluation_key(self):
         """Testa a relinearização de ciphertext usando Evaluation Key."""
@@ -463,7 +459,7 @@ class TestCKKSKeyFactory:
                 decrypted_mult,
                 ct_mult.scale,
                 self.crypto_params.POLYNOMIAL_DEGREE,
-                ct_mult.current_modulus,
+                q_mod=True,  # Aplica correção modular para valores criptografados
             )
 
             # Descriptografar o ciphertext relinearizado
@@ -472,7 +468,7 @@ class TestCKKSKeyFactory:
                 decrypted_relin,
                 ct_relin.scale,
                 self.crypto_params.POLYNOMIAL_DEGREE,
-                ct_relin.current_modulus,
+                q_mod=True,  # Aplica correção modular para valores criptografados
             )
 
             # Verificar que os resultados são aproximadamente iguais
@@ -532,9 +528,6 @@ if __name__ == "__main__":
 
         test_instance.test_generate_public_key()
         print("✓ test_generate_public_key")
-
-        test_instance.test_generate_relinearization_key()
-        print("✓ test_generate_relinearization_key")
 
         test_instance.test_generate_keypair()
         print("✓ test_generate_keypair")

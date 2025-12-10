@@ -85,43 +85,9 @@ class CKKSCiphertext:
         return self.crypto_params.MODULUS_CHAIN[self.level]
 
     @property
-    def noise_budget(self) -> int:
-        """Retorna uma estimativa do orçamento de ruído restante."""
-        return self.level  # Simplificado - o nível indica níveis restantes
-
-    @property
     def size(self) -> int:
         """Retorna o número de componentes do ciphertext."""
         return len(self.components)
-
-    def is_fresh(self) -> bool:
-        """
-        Verifica se é um ciphertext recém-criptografado.
-
-        Um ciphertext é considerado "fresh" se:
-        - Tem exatamente 2 componentes (não foi multiplicado)
-        - Tem scale igual ao SCALING_FACTOR (não foi rescalado)
-        """
-        return (
-            self.size == 2
-            and abs(self.scale - self.crypto_params.SCALING_FACTOR) < 1e-10
-        )
-
-    def can_add_with(self, other: "CKKSCiphertext") -> bool:
-        """
-        Verifica se é possível somar com outro ciphertext.
-
-        Args:
-            other: Outro ciphertext CKKS
-
-        Returns:
-            bool: True se a adição for possível
-        """
-        return (
-            self.level == other.level
-            and abs(self.scale - other.scale) < 1e-10
-            and self.size == other.size
-        )
 
     def can_multiply_with(self, other: "CKKSCiphertext") -> bool:
         """
@@ -139,14 +105,6 @@ class CKKSCiphertext:
             and self.size <= 2
             and other.size <= 2
         )  # Suporte apenas para ciphertexts de tamanho 2
-
-    def copy(self) -> "CKKSCiphertext":
-        """Cria uma cópia profunda do ciphertext."""
-        return CKKSCiphertext(
-            components=[Polynomial(comp.coef.copy()) for comp in self.components],
-            level=self.level,
-            crypto_params=self.crypto_params,
-        )
 
     def get_component(self, index: int) -> Polynomial:
         """
@@ -167,44 +125,6 @@ class CKKSCiphertext:
             )
         return self.components[index]
 
-    def update_after_rescale(self, new_level: int, new_scale: float):
-        """
-        Atualiza o ciphertext após operação de rescale.
-
-        Args:
-            new_level: Novo nível na cadeia de módulos
-            new_scale: Nova escala após rescale
-        """
-        if new_level < 0 or new_level >= self.level:
-            raise ValueError(
-                "Novo nível deve ser menor que o nível atual e não negativo"
-            )
-
-        self.level = new_level
-        self.scale = new_scale
-
-    def print_summary(self):
-        """Imprime um resumo detalhado do ciphertext."""
-        print("=== RESUMO DO CIPHERTEXT CKKS ===")
-        print(f"Número de componentes: {self.size}")
-        print(
-            f"Nível atual: {self.level} (de {len(self.crypto_params.MODULUS_CHAIN)-1})"
-        )
-        print(
-            f"Módulo atual: {self.current_modulus} (~{self.current_modulus.bit_length()} bits)"
-        )
-        print(f"Escala: {self.scale:.2e}")
-        print(f"Orçamento de ruído: {self.noise_budget} níveis restantes")
-        print(f"Status: {'Fresh' if self.is_fresh() else 'Processado'}")
-
-        for i, comp in enumerate(self.components):
-            coeffs = np.array(comp.coef, dtype=np.int64)
-            print(
-                f"Componente {i}: {len(coeffs)} coeficientes, "
-                f"max={np.max(np.abs(coeffs)):.2e}"
-            )
-        print("=" * 35)
-
     @staticmethod
     def add_homomorphic(
         ct1: "CKKSCiphertext", ct2: "CKKSCiphertext"
@@ -223,7 +143,11 @@ class CKKSCiphertext:
             ValueError: Se os ciphertexts não são compatíveis para adição
         """
         # Validação de compatibilidade
-        if not ct1.can_add_with(ct2):
+        if not (
+            ct1.level == ct2.level
+            and abs(ct1.scale - ct2.scale) < 1e-10
+            and ct1.size == ct2.size
+        ):
             raise ValueError(
                 f"Ciphertexts não são compatíveis para adição. "
                 f"ct1: level={ct1.level}, scale={ct1.scale}, size={ct1.size}; "
@@ -564,26 +488,6 @@ class CKKSCiphertext:
         return ct_result
 
     @staticmethod
-    def multiply_homomorphic_without_relin(
-        ct1: "CKKSCiphertext", ct2: "CKKSCiphertext"
-    ) -> "CKKSCiphertext":
-        """
-        Multiplica dois ciphertexts homomorficamente sem relinearização.
-
-        Este é um alias conveniente para raw_multiply_homomorphic,
-        fornecendo uma interface mais clara quando a relinearização
-        não é desejada imediatamente.
-
-        Args:
-            ct1: Primeiro ciphertext (deve ter 2 componentes)
-            ct2: Segundo ciphertext (deve ter 2 componentes)
-
-        Returns:
-            CKKSCiphertext: Resultado da multiplicação (3 componentes)
-        """
-        return CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
-
-    @staticmethod
     def key_switching(
         ciphertext: "CKKSCiphertext", key_switching_key: tuple, P: int = None
     ) -> "CKKSCiphertext":
@@ -705,14 +609,6 @@ if __name__ == "__main__":
 
     # Demonstrar funcionalidades
     print("Exemplo de uso da classe CKKSCiphertext:")
-    ct.print_summary()
-
-    # Teste de conversão para dicionário
-    dict_format = ct.to_dict()
-    print(f"\nFormato dicionário: {list(dict_format.keys())}")
-
-    # Teste de criação a partir de dicionário
-    ct2 = CKKSCiphertext.from_dict(dict_format)
-    print(f"Ciphertext recriado: {ct2}")
+    print(f"Level: {ct.level}, Scale: {ct.scale}, Size: {ct.size}")
 
     print("\n✓ Classe CKKSCiphertext funcionando corretamente!")

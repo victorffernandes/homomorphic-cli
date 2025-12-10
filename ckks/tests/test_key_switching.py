@@ -4,9 +4,10 @@ Testes para o método de Key Switching do esquema CKKS.
 
 import numpy as np
 import pytest
-from .factories import CKKSCiphertextFactory, CKKSKeyFactory
-from .ckks import CKKSCiphertext
-from .constants import CKKSCryptographicParameters
+from ckks.ciphertext_factory import CKKSCiphertextFactory
+from ckks.key_factory import CKKSKeyFactory
+from ckks.ckks import CKKSCiphertext
+from ckks.constants import CKKSCryptographicParameters
 
 
 class TestKeySwitching:

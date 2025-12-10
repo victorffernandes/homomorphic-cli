@@ -2,10 +2,12 @@
 
 from .ckks import CKKSCiphertext
 from .constants import CKKSCryptographicParameters
-from .factories import (
+from .ciphertext_factory import (
     CKKSCiphertextFactory,
-    CKKSKeyFactory,
     create_ckks_factory,
+)
+from .key_factory import (
+    CKKSKeyFactory,
     create_key_factory,
 )
 
