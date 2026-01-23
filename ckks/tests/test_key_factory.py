@@ -12,7 +12,7 @@ from numpy.polynomial import Polynomial
 from ckks.key_factory import CKKSKeyFactory, create_key_factory
 from ckks.ciphertext_factory import CKKSCiphertextFactory
 from ckks.constants import CKKSCryptographicParameters
-from ckks.ckks import CKKSCiphertext
+from ckks.ckks_ciphertext import CKKSCiphertext
 
 
 class TestCKKSKeyFactory:

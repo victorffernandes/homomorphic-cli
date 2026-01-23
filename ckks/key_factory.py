@@ -1,12 +1,6 @@
-"""
-Fábrica para geração e gerenciamento de chaves CKKS seguindo a definição KeyGen formal.
-
-Esta classe implementa a geração de chaves conforme especificado no esquema CKKS.
-"""
-
 import numpy as np
 from numpy.polynomial import Polynomial
-from typing import List, Union, Tuple, Dict, Any
+from typing import Tuple, Dict
 
 # Imports relativos para uso como módulo, absolutos para execução direta
 try:
@@ -404,17 +398,39 @@ class CKKSKeyFactory:
             return False
 
 
-# Função de conveniência para criar instância da fábrica de chaves
 def create_key_factory(
     crypto_params: CKKSCryptographicParameters = None,
 ) -> CKKSKeyFactory:
-    """
-    Cria uma nova instância da fábrica de chaves CKKS.
-
-    Args:
-        crypto_params: Parâmetros criptográficos (usa padrão se None)
-
-    Returns:
-        CKKSKeyFactory: Nova instância da fábrica de chaves
-    """
+    """Creates a new CKKS key factory instance."""
     return CKKSKeyFactory(crypto_params)
+
+
+if __name__ == "__main__":
+    from .constants import CKKSCryptographicParameters
+    
+    print("=== CKKS Key Factory Example ===\n")
+    
+    crypto_params = CKKSCryptographicParameters()
+    factory = CKKSKeyFactory(crypto_params)
+    
+    print("1. Generating secret key...")
+    sk = factory.generate_secret_key()
+    print(f"   ✓ Secret key: (1, s) with {len(sk[1].coef)} coefficients")
+    
+    print("\n2. Generating public key...")
+    pk = factory.generate_public_key(sk)
+    print(f"   ✓ Public key: (b, a) with {len(pk[0].coef)} coefficients each")
+    
+    print("\n3. Generating evaluation key...")
+    evk = factory.generate_evaluation_key(sk)
+    print(f"   ✓ Evaluation key: 2 components generated")
+    
+    print("\n4. Generating full keyset...")
+    keyset = factory.generate_full_keyset()
+    print(f"   ✓ Complete keyset:")
+    print(f"     - Secret key: ✓")
+    print(f"     - Public key: ✓")
+    print(f"     - Evaluation key: ✓")
+    
+    print("\n✅ CKKSKeyFactory working correctly!")
+

@@ -1,25 +1,3 @@
-"""
-Constantes centralizadas para o esquema de criptografia homomórfica CKKS.
-
-Esta classe organiza todos os parâmetros criptográficos de forma semântica
-para facilitar manutenção e configuração do sistema.
-
-Baseado nas recomendações do HEAAN (run.cpp):
-- Básico: logN=13, logQ=65, logp=30
-- Potências: logN=13, logQ=155, logp=30
-- Alta precisão: logN=15, logQ=618, logp=56
-- FFT: logN=13, logQ=100, logp=42
-- Inverso: logN=14, logQ=255, logp=25
-
-Seguindo implementação HEAAN (Context.cpp):
-- N = 2^logN (polynomial degree)
-- Q = 2^logQ (base modulus)
-- QQ = 2^(2*logQ) = Q^2 (special modulus for key switching)
-- Δ = 2^logp (scaling factor)
-- σ = 3.2 (default gaussian noise stddev)
-- h = 64 (default hamming weight)
-"""
-
 import numpy as np
 from numpy.polynomial import Polynomial
 
@@ -77,43 +55,43 @@ class CKKSCryptographicParameters:
         self.logN = logN
         self.logQ = logQ
         self.logp = logp
-        
+
         # N = 2^logN (polynomial degree)
         self.POLYNOMIAL_DEGREE = 1 << logN  # N
-        
+
         # Nh = N/2
         self.Nh = self.POLYNOMIAL_DEGREE >> 1
-        
+
         # M = 2N
         self.M = self.POLYNOMIAL_DEGREE << 1
-        
+
         # Q = 2^logQ (base modulus)
         self.Q0 = 1 << logQ  # Q
-        
+
         # logQQ = 2*logQ
         self.logQQ = logQ << 1
-        
+
         # QQ = 2^(2*logQ) = Q^2 (special modulus for key switching)
         self.P = 1 << self.logQQ  # QQ = Q^2
-        
+
         # === MÓDULOS DA CADEIA CKKS (seguindo qpowvec) ===
         # HEAAN usa qpowvec[i] = 2^i para i de 0 até logQQ+1
         # A cadeia de módulos é implícita: qualquer módulo é 2^logq onde logq varia
         if total_levels is None:
             # Por padrão, cria cadeia até logQQ (2*logQ) para key switching
             total_levels = self.logQQ
-        
+
         # Cadeia de módulos: [2^0, 2^1, 2^2, ..., 2^total_levels]
         # Similar ao qpowvec do HEAAN
         self.MODULUS_CHAIN = [1 << i for i in range(total_levels + 1)]
-        
+
         # === PARÂMETROS DE ESCALA ===
         # SCALING_FACTOR = 2^logp (DELTA)
         self.SCALING_FACTOR = 1 << logp  # Δ = 2^logp
-        
+
         # === PARÂMETROS DE RUÍDO ===
         self.GAUSSIAN_NOISE_STDDEV = gaussian_noise_stddev  # σ
-        
+
         # === PARÂMETROS PARA DISTRIBUIÇÕES DE CHAVE ===
         self.HAMMING_WEIGHT = hamming_weight  # h
         self.ZERO_ONE_DENSITY = zero_one_density  # ρ
@@ -137,84 +115,84 @@ class CKKSCryptographicParameters:
             int: O maior módulo da cadeia
         """
         return self.MODULUS_CHAIN[-1]
-    
+
     def get_modulus_at_level(self, logq: int):
         """
         Retorna o módulo no nível especificado (seguindo padrão HEAAN qpowvec).
-        
+
         Args:
             logq: log do módulo desejado (q = 2^logq)
-            
+
         Returns:
             int: Módulo 2^logq
         """
         if logq < 0 or logq >= len(self.MODULUS_CHAIN):
             return 1 << logq  # Calcula diretamente se fora da cadeia
         return self.MODULUS_CHAIN[logq]
-    
+
     def get_q0(self):
         """
         Retorna Q0 (módulo base).
-        
+
         Returns:
             int: Q0 = 2^logQ
         """
         return self.Q0
-    
+
     def get_p(self):
         """
         Retorna P (módulo especial para key switching, QQ em HEAAN).
-        
+
         Returns:
             int: P = QQ = 2^(2*logQ) = Q^2
         """
         return self.P
-    
+
     @classmethod
     def basic_config(cls):
         """
         Configuração básica recomendada do HEAAN (run.cpp).
-        
+
         Returns:
             CKKSCryptographicParameters: Parâmetros para operações básicas
         """
         return cls(logN=13, logQ=65, logp=30)
-    
+
     @classmethod
     def power_config(cls):
         """
         Configuração para operações de potência recomendada do HEAAN (run.cpp).
-        
+
         Returns:
             CKKSCryptographicParameters: Parâmetros para operações de potência
         """
         return cls(logN=13, logQ=155, logp=30)
-    
+
     @classmethod
     def high_precision_config(cls):
         """
         Configuração de alta precisão recomendada do HEAAN (run.cpp).
-        
+
         Returns:
             CKKSCryptographicParameters: Parâmetros para alta precisão
         """
         return cls(logN=15, logQ=618, logp=56)
-    
+
     @classmethod
     def fft_config(cls):
         """
         Configuração para operações FFT recomendada do HEAAN (run.cpp).
-        
+
         Returns:
             CKKSCryptographicParameters: Parâmetros para operações FFT
         """
         return cls(logN=13, logQ=100, logp=42)
-    
+
     @classmethod
     def inverse_config(cls):
         """
         Configuração para operações inversas recomendada do HEAAN (run.cpp).
-        
+
         Returns:
             CKKSCryptographicParameters: Parâmetros para operações inversas
         """
@@ -228,7 +206,9 @@ class CKKSCryptographicParameters:
         print(f"logN: {self.logN} → N = 2^{self.logN} = {self.POLYNOMIAL_DEGREE}")
         print(f"logQ: {self.logQ} → Q = 2^{self.logQ} = {self.Q0}")
         print(f"logp: {self.logp} → Δ = 2^{self.logp} = {self.SCALING_FACTOR}")
-        print(f"logQQ: {self.logQQ} → QQ = 2^{self.logQQ} = {self.P} (P para key switching)")
+        print(
+            f"logQQ: {self.logQQ} → QQ = 2^{self.logQQ} = {self.P} (P para key switching)"
+        )
         print(f"Desvio padrão do ruído (σ): {self.GAUSSIAN_NOISE_STDDEV}")
         print(f"Cadeia de módulos: {len(self.MODULUS_CHAIN)} níveis")
         print(
@@ -467,15 +447,11 @@ class CKKSCryptographicParameters:
         if not 0 <= density <= 1:
             raise ValueError(f"Densidade deve estar entre 0 e 1, recebido: {density}")
 
+        # Vectorized implementation
+        rand_vals = np.random.random(degree_n)
         coeffs = np.zeros(degree_n, dtype=np.int64)
-
-        for i in range(degree_n):
-            rand_val = np.random.random()
-            if rand_val < density / 2:
-                coeffs[i] = -1
-            elif rand_val < density:
-                coeffs[i] = 1
-            # else: coeff[i] permanece 0
+        coeffs[rand_vals < density / 2] = -1
+        coeffs[(rand_vals >= density / 2) & (rand_vals < density)] = 1
 
         return Polynomial(coeffs)
 

@@ -1,5 +1,5 @@
 import numpy as np
-from .ckks import CKKSCiphertext
+from .ckks_ciphertext import CKKSCiphertext
 from .constants import CKKSCryptographicParameters
 from .ciphertext_factory import CKKSCiphertextFactory
 from .key_factory import CKKSKeyFactory

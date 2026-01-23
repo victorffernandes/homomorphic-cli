@@ -292,25 +292,8 @@ class CKKSCiphertext:
         # d2 = a1 * a2 (mod q_ℓ)
         d2 = a1 * a2
 
-        # rescaling_factor = (
-        #     crypto_params.MODULUS_CHAIN[ct1.level - 1]
-        #     / crypto_params.MODULUS_CHAIN[ct1.level]
-        # )
-        # components = [
-        #     d0 * rescaling_factor,
-        #     d1 * rescaling_factor,
-        #     d2 * rescaling_factor,
-        # ]
-
-        components = [
-            d0,
-            d1,
-            d2,
-        ]
-
-        # components = [
-        #     Polynomial(np.round(comp.coef).astype(np.int64)) for comp in components
-        # ]
+        components = [d0, d1, d2]
+        
         components = [
             crypto_params.poly_ring_mod(
                 comp,
