@@ -18,7 +18,7 @@ class CKKSCryptographicParameters:
     def __init__(
         self,
         logN: int = 13,  # log2(N) - log do grau do polinômio (N = 2^logN)
-        logQ: int = 65,  # log2(Q) - log do módulo base (Q = 2^logQ)
+        logQ: int = 30,  # log2(Q) - log do módulo base (Q = 2^logQ)
         logp: int = 30,  # log2(Δ) - log do fator de escala (Δ = 2^logp)
         gaussian_noise_stddev: float = 3.2,  # σ - desvio padrão gaussiano (padrão HEAAN)
         hamming_weight: int = 64,  # h - peso de Hamming (padrão HEAAN)
@@ -345,21 +345,6 @@ class CKKSCryptographicParameters:
 
         # Aplica redução no anel R_q = ℤ_q[X]/(X^N + 1)
         return CKKSCryptographicParameters.poly_ring_mod(full_poly, ring_poly_mod, q)
-
-    def poly_mul(self, p1, p2):
-        """
-        Multiplicação de polinômios.
-
-        Args:
-            p1: Primeiro polinômio
-            p2: Segundo polinômio
-
-        Returns:
-            Polynomial: Resultado da multiplicação
-        """
-
-        full_poly = p1 * p2
-        return full_poly
 
     def generate_gaussian_poly(self, degree_n=None, sigma_val=None):
         """

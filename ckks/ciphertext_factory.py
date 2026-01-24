@@ -23,14 +23,14 @@ except ImportError:
 class CKKSCiphertextFactory:
     """
     Factory for CKKS ciphertext creation and manipulation.
-    
+
     Note: Encoding/decoding methods are deprecated. Use CKKSPlaintext for those operations.
     """
 
     def __init__(self, crypto_params: CKKSCryptographicParameters = None):
         if crypto_params is None:
             crypto_params = CKKSCryptographicParameters()
-        
+
         self.crypto_params = crypto_params
 
     def ckks_encode_real(
@@ -46,7 +46,7 @@ class CKKSCiphertextFactory:
             "CKKSCiphertextFactory.ckks_encode_real() is deprecated. "
             "Use CKKSPlaintext.encode() instead.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         return CKKSPlaintext.encode(real_vector, self.crypto_params, delta_scale)
 
@@ -65,7 +65,7 @@ class CKKSCiphertextFactory:
             "CKKSCiphertextFactory.ckks_decode_real() is deprecated. "
             "Use CKKSPlaintext.decode() instead.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         return CKKSPlaintext.decode(
             message_poly, self.crypto_params, delta_scale, q_mod, q_mod_value
@@ -221,7 +221,7 @@ class CKKSCiphertextFactory:
         """Decrypts and decodes a ciphertext in one operation."""
         decrypted_poly = self.decrypt(ciphertext, secret_key)
         scale = ciphertext.scale
-        
+
         decoded_vector = CKKSPlaintext.decode(
             decrypted_poly,
             self.crypto_params,
@@ -229,10 +229,10 @@ class CKKSCiphertextFactory:
             q_mod=True,
             q_mod_value=ciphertext.current_modulus,
         )
-        
+
         if expected_length is not None:
             decoded_vector = decoded_vector[:expected_length]
-        
+
         return decoded_vector
 
 
@@ -245,21 +245,20 @@ def create_ckks_factory(
 
 if __name__ == "__main__":
     from constants import CKKSCryptographicParameters
-    from ckks_plaintext import CKKSPlaintext
-    
+
     print("=== CKKS Ciphertext Factory Example ===\n")
-    
+
     crypto_params = CKKSCryptographicParameters()
     factory = CKKSCiphertextFactory(crypto_params)
-    
+
     real_data = [1.5, -2.3, 3.7, 0.0]
-    
+
     # Encode using CKKSPlaintext (preferred method)
     encoded_poly = CKKSPlaintext.encode(real_data, crypto_params)
     print(f"✓ Encoded with {len(encoded_poly.coef)} coefficients")
-    
+
     # Decode
     decoded_data = CKKSPlaintext.decode(encoded_poly, crypto_params, q_mod=False)
     print(f"✓ Decoded: {decoded_data[:len(real_data)]}")
-    
+
     print("\n✅ CKKSCiphertextFactory working correctly!")

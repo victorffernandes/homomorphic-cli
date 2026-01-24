@@ -31,7 +31,7 @@ class TestCKKSCiphertextFactory:
         original_data = [1.5, -2.3, 3.7, 0.0]
 
         # Codifica
-        encoded_poly = factory.ckks_encode_real(original_data)
+        encoded_poly = CKK.ckks_encode_real(original_data)
         assert isinstance(encoded_poly, Polynomial)
 
         # Decodifica (sem correção modular para valores não criptografados)
