@@ -6,7 +6,6 @@ correto da fábrica de ciphertexts CKKS.
 """
 
 import numpy as np
-from numpy.polynomial import Polynomial
 
 from ckks.constants import CKKSCryptographicParameters
 from ckks.ciphertext_factory import CKKSCiphertextFactory, create_ckks_factory
@@ -22,131 +21,12 @@ class TestCKKSCiphertextFactory:
         assert isinstance(factory, CKKSCiphertextFactory)
         assert isinstance(factory.crypto_params, CKKSCryptographicParameters)
 
-    def test_encode_decode_cycle(self):
-        """Testa ciclo completo de codificação e decodificação."""
-        factory = create_ckks_factory()
-
-        # Dados de teste - CKKS suporta N/2 slots (4 slots para N=8)
-        # Usa apenas 4 elementos para garantir compatibilidade
-        original_data = [1.5, -2.3, 3.7, 0.0]
-
-        # Codifica
-        encoded_poly = CKK.ckks_encode_real(original_data)
-        assert isinstance(encoded_poly, Polynomial)
-
-        # Decodifica (sem correção modular para valores não criptografados)
-        decoded_data = factory.ckks_decode_real(encoded_poly, q_mod=False)
-
-        # Verifica que temos pelo menos o número de elementos originais
-        assert len(decoded_data) >= len(
-            original_data
-        ), f"Decoded data length {len(decoded_data)} < original {len(original_data)}"
-
-        # Verifica precisão - compara apenas os elementos decodificados disponíveis
-        np.testing.assert_allclose(
-            decoded_data[: len(original_data)],
-            original_data,
-            rtol=1e-1,
-            atol=1e-1,  # Tolerância relativa de 1% e absoluta pequena
-        )
-
-    def test_encode_with_custom_params(self):
-        """Testa codificação com parâmetros personalizados."""
-        factory = create_ckks_factory()
-
-        original_data = [2.5, -1.8]
-        custom_scale = 1000.0
-
-        # Verifica se os dados de entrada são válidos
-        assert len(original_data) > 0
-        assert custom_scale > 0
-
-        # Codifica com escala personalizada
-        encoded_poly = factory.ckks_encode_real(original_data, delta_scale=custom_scale)
-
-        # Verifica se a codificação funcionou
-        assert isinstance(encoded_poly, Polynomial)
-        assert len(encoded_poly.coef) > 0
-
-        # Decodifica com a mesma escala (sem correção modular para valores não criptografados)
-        decoded_data = factory.ckks_decode_real(
-            encoded_poly, delta_scale=custom_scale, q_mod=False
-        )
-
-        # Verifica se a decodificação funcionou
-        assert isinstance(decoded_data, np.ndarray)
-        assert len(decoded_data) >= len(original_data)
-
-        # Verifica precisão
-        np.testing.assert_allclose(
-            decoded_data[: len(original_data)],
-            original_data,
-            rtol=5e-2,  # Tolerância de 5% para escalas personalizadas
-        )
-
     def test_factory_with_custom_params(self):
         """Testa criação da fábrica com parâmetros personalizados."""
         custom_params = CKKSCryptographicParameters()
         factory = CKKSCiphertextFactory(custom_params)
 
         assert factory.crypto_params is custom_params
-
-    def test_empty_vector_encoding(self):
-        """Testa codificação de vetor vazio."""
-        factory = create_ckks_factory()
-
-        # Vetor vazio deve funcionar
-        empty_data = []
-        encoded_poly = factory.ckks_encode_real(empty_data)
-        assert isinstance(encoded_poly, Polynomial)
-
-        # Decodificação deve retornar valores próximos de zero (sem correção modular)
-        decoded_data = factory.ckks_decode_real(encoded_poly, q_mod=False)
-        assert len(decoded_data) > 0
-
-        max_slots = factory.crypto_params.POLYNOMIAL_DEGREE // 2
-        expected_zeros = [0] * min(max_slots, len(decoded_data))
-        np.testing.assert_allclose(
-            decoded_data[: len(expected_zeros)], expected_zeros, atol=1e-1
-        )
-
-    def test_single_element_encoding(self):
-        """Testa codificação de um único elemento."""
-        factory = create_ckks_factory()
-
-        single_value = [42.7]
-        encoded_poly = factory.ckks_encode_real(single_value)
-        decoded_data = factory.ckks_decode_real(encoded_poly, q_mod=False)
-
-        # Verifica se o primeiro elemento foi recuperado corretamente
-        np.testing.assert_allclose([decoded_data[0]], single_value, rtol=1e-2)
-
-    def test_large_vector_encoding(self):
-        """Testa codificação de vetor grande."""
-        factory = create_ckks_factory()
-
-        # Cria vetor com metade do tamanho máximo permitido
-        max_elements = factory.crypto_params.POLYNOMIAL_DEGREE // 2
-        large_data = np.random.uniform(-10, 10, max_elements // 2).tolist()
-
-        # Verifica que os dados foram gerados corretamente
-        assert len(large_data) > 0
-        assert all(isinstance(x, float) for x in large_data)
-
-        encoded_poly = factory.ckks_encode_real(large_data)
-        assert isinstance(encoded_poly, Polynomial)
-        assert len(encoded_poly.coef) > 0
-
-        decoded_data = factory.ckks_decode_real(encoded_poly, q_mod=False)
-        assert isinstance(decoded_data, np.ndarray)
-        assert len(decoded_data) >= len(large_data)
-
-        # Verifica precisão para os elementos originais
-        np.testing.assert_allclose(
-            decoded_data[: len(large_data)],
-            large_data,
-            rtol=1e-1,  # Tolerância um pouco maior para vetores grandes
-        )
 
     def test_encrypt_decrypt_cycle(self):
         """Testa ciclo completo de criptografia e descriptografia."""

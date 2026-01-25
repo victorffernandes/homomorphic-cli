@@ -17,9 +17,9 @@ class CKKSCryptographicParameters:
 
     def __init__(
         self,
-        logN: int = 13,  # log2(N) - log do grau do polinômio (N = 2^logN)
-        logQ: int = 30,  # log2(Q) - log do módulo base (Q = 2^logQ)
-        logp: int = 30,  # log2(Δ) - log do fator de escala (Δ = 2^logp)
+        logN: int = 6,  # log2(N) - log do grau do polinômio (N = 2^logN)
+        logQ: int = 12,  # log2(Q) - log do módulo base (Q = 2^logQ)
+        logp: int = 12,  # log2(Δ) - log do fator de escala (Δ = 2^logp)
         gaussian_noise_stddev: float = 3.2,  # σ - desvio padrão gaussiano (padrão HEAAN)
         hamming_weight: int = 64,  # h - peso de Hamming (padrão HEAAN)
         zero_one_density: float = 0.5,  # ρ - densidade ZO
