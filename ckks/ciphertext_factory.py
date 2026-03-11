@@ -5,7 +5,6 @@ DEPRECATED: Encode/decode methods are deprecated. Use CKKSPlaintext instead.
 This class now focuses on encryption/decryption operations.
 """
 
-import warnings
 import numpy as np
 from numpy.polynomial import Polynomial
 from typing import List, Union, Tuple, Dict, Any
@@ -32,44 +31,6 @@ class CKKSCiphertextFactory:
             crypto_params = CKKSCryptographicParameters()
 
         self.crypto_params = crypto_params
-
-    def ckks_encode_real(
-        self,
-        real_vector: List[float],
-        delta_scale: float = None,
-        n_poly_coeffs: int = None,
-    ) -> Polynomial:
-        """
-        DEPRECATED: Use CKKSPlaintext.encode() instead.
-        """
-        warnings.warn(
-            "CKKSCiphertextFactory.ckks_encode_real() is deprecated. "
-            "Use CKKSPlaintext.encode() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return CKKSPlaintext.encode(real_vector, self.crypto_params, delta_scale)
-
-    def ckks_decode_real(
-        self,
-        message_poly: Polynomial,
-        delta_scale: float = None,
-        n_poly_coeffs: int = None,
-        q_mod: bool = True,
-        q_mod_value: int = None,
-    ) -> np.ndarray:
-        """
-        DEPRECATED: Use CKKSPlaintext.decode() instead.
-        """
-        warnings.warn(
-            "CKKSCiphertextFactory.ckks_decode_real() is deprecated. "
-            "Use CKKSPlaintext.decode() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return CKKSPlaintext.decode(
-            message_poly, self.crypto_params, delta_scale, q_mod, q_mod_value
-        )
 
     def encrypt(
         self,

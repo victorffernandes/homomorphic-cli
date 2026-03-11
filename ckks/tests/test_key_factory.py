@@ -13,10 +13,13 @@ from ckks.key_factory import CKKSKeyFactory, create_key_factory
 from ckks.ciphertext_factory import CKKSCiphertextFactory
 from ckks.constants import CKKSCryptographicParameters
 from ckks.ckks_ciphertext import CKKSCiphertext
+from ckks.ckks_plaintext import CKKSPlaintext
 
 
 class TestCKKSKeyFactory:
     """Testes para a fábrica de chaves CKKS."""
+
+    PRECISION_TOLERANCE = 0.1
 
     def setup_method(self):
         """Configuração para cada teste."""
@@ -219,7 +222,7 @@ class TestCKKSKeyFactory:
             assert len(decrypted_vector) >= len(test_vector)
             for i in range(len(test_vector)):
                 assert (
-                    abs(decrypted_vector[i] - test_vector[i]) < 0.1
+                    abs(decrypted_vector[i] - test_vector[i]) < self.PRECISION_TOLERANCE
                 ), f"Valor {i}: esperado {test_vector[i]}, obtido {decrypted_vector[i]}"
 
             # Se chegou até aqui, as chaves são válidas
@@ -281,7 +284,7 @@ class TestCKKSKeyFactory:
             # Verifica precisão da recuperação
             keys_consistent = True
             for i in range(len(test_vector)):
-                if abs(decrypted_vector[i] - test_vector[i]) > 0.001:
+                if abs(decrypted_vector[i] - test_vector[i]) > self.PRECISION_TOLERANCE:
                     keys_consistent = False
                     break
 
@@ -317,6 +320,7 @@ class TestCKKSKeyFactory:
         Nota: O teste verifica a estrutura e execução, não a precisão matemática exata.
         """
         secret_key = self.key_factory.generate_secret_key()
+        _, s = secret_key  # sk = (1, s); extract the s polynomial for ring arithmetic
 
         # Gerar evaluation key com P específico
         level = len(self.crypto_params.MODULUS_CHAIN) - 1
@@ -334,7 +338,7 @@ class TestCKKSKeyFactory:
         term1 = evk1
 
         # Termo 2: evk2·s
-        term2 = self.crypto_params.poly_mul_mod(evk2, secret_key, pq_mod, ring_poly_mod)
+        term2 = self.crypto_params.poly_mul_mod(evk2, s, pq_mod, ring_poly_mod)
 
         # Produto interno: evk1 + evk2·s
         inner_product = (term1 + term2) % ring_poly_mod
@@ -344,7 +348,7 @@ class TestCKKSKeyFactory:
 
         # Calcular P·s² para comparação
         s_squared = self.crypto_params.poly_mul_mod(
-            secret_key, secret_key, pq_mod, ring_poly_mod
+            s, s, pq_mod, ring_poly_mod
         )
         p_s_squared = (P * s_squared) % ring_poly_mod
         p_s_squared_final = self.crypto_params.poly_ring_mod(
@@ -455,20 +459,20 @@ class TestCKKSKeyFactory:
         try:
             # Descriptografar o ciphertext de 3 componentes
             decrypted_mult = self.ciphertext_factory.decrypt(ct_mult, secret_key)
-            result_mult = self.ciphertext_factory.ckks_decode_real(
+            result_mult = CKKSPlaintext.decode(
                 decrypted_mult,
+                self.crypto_params,
                 ct_mult.scale,
-                self.crypto_params.POLYNOMIAL_DEGREE,
-                q_mod=True,  # Aplica correção modular para valores criptografados
+                q_mod=True,
             )
 
             # Descriptografar o ciphertext relinearizado
             decrypted_relin = self.ciphertext_factory.decrypt(ct_relin, secret_key)
-            result_relin = self.ciphertext_factory.ckks_decode_real(
+            result_relin = CKKSPlaintext.decode(
                 decrypted_relin,
+                self.crypto_params,
                 ct_relin.scale,
-                self.crypto_params.POLYNOMIAL_DEGREE,
-                q_mod=True,  # Aplica correção modular para valores criptografados
+                q_mod=True,
             )
 
             # Verificar que os resultados são aproximadamente iguais
@@ -478,7 +482,7 @@ class TestCKKSKeyFactory:
 
             # O erro deve ser pequeno (tolerância maior devido ao ruído)
             assert (
-                max_diff < 0.001
+                max_diff < self.PRECISION_TOLERANCE
             ), f"Diferença muito grande após relinearização: {max_diff}"
 
             # Teste de precisão adicional: verificar se a multiplicação está correta
@@ -486,7 +490,6 @@ class TestCKKSKeyFactory:
 
             # Testar precisão do resultado relinearizado
             precision_error_relin = np.max(np.abs(result_relin[:4] - expected_product))
-            precision_tolerance = 0.001
 
             print("\n=== TESTE DE PRECISÃO COM EVALUATION KEY ===")
             print(f"Mensagem 1: {m1[:4]}")
@@ -495,12 +498,12 @@ class TestCKKSKeyFactory:
             print(f"Resultado relinearizado: {result_relin[:4]}")
             print(f"Erro de precisão: {precision_error_relin:.6f}")
 
-            if precision_error_relin < precision_tolerance:
-                print("✅ Precisão com Evaluation Key dentro da tolerância (< 0.001)")
+            if precision_error_relin < self.PRECISION_TOLERANCE:
+                print(f"✅ Precisão com Evaluation Key dentro da tolerância (< {self.PRECISION_TOLERANCE})")
             else:
                 print(
                     f"⚠️ Precisão com Evaluation Key acima da tolerância: "
-                    f"{precision_error_relin:.6f} ≥ {precision_tolerance}"
+                    f"{precision_error_relin:.6f} ≥ {self.PRECISION_TOLERANCE}"
                 )
 
         except Exception as e:

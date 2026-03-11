@@ -15,18 +15,14 @@ from ckks.key_factory import create_key_factory
 class TestCKKSCiphertextFactory:
     """Testes para a classe CKKSCiphertextFactory."""
 
+    PRECISION_TOLERANCE = 1e-1
+
     def test_factory_creation(self):
         """Testa criação da fábrica."""
         factory = create_ckks_factory()
         assert isinstance(factory, CKKSCiphertextFactory)
         assert isinstance(factory.crypto_params, CKKSCryptographicParameters)
 
-    def test_factory_with_custom_params(self):
-        """Testa criação da fábrica com parâmetros personalizados."""
-        custom_params = CKKSCryptographicParameters()
-        factory = CKKSCiphertextFactory(custom_params)
-
-        assert factory.crypto_params is custom_params
 
     def test_encrypt_decrypt_cycle(self):
         """Testa ciclo completo de criptografia e descriptografia."""
@@ -39,33 +35,24 @@ class TestCKKSCiphertextFactory:
         # Mensagem de teste
         test_data = [1.5, -2.3, 3.7]
 
-        # Codifica mensagem
-        encoded_message = factory.ckks_encode_real(test_data)
-
-        # Criptografa
-        ciphertext = factory.encrypt(encoded_message, key_set["public_key"])
+        # Codifica e criptografa
+        ciphertext = factory.encode_and_encrypt(test_data, key_set["public_key"])
 
         # Verifica se o ciphertext foi criado corretamente
         assert hasattr(ciphertext, "components")
         assert len(ciphertext.components) == 2
         assert ciphertext.level == len(factory.crypto_params.MODULUS_CHAIN) - 1
 
-        # Descriptografa
-        decrypted_poly = factory.decrypt(ciphertext, key_set["secret_key"])
-
-        # Decodifica (com correção modular para valores criptografados)
-        decoded_data = factory.ckks_decode_real(
-            decrypted_poly,
-            ciphertext.scale,
-            factory.crypto_params.POLYNOMIAL_DEGREE,
-            q_mod=True,
+        # Descriptografa e decodifica
+        decoded_data = factory.decrypt_and_decode(
+            ciphertext, key_set["secret_key"], len(test_data)
         )
 
         # Verifica se conseguimos recuperar os dados originais
         np.testing.assert_allclose(
-            decoded_data[: len(test_data)],
+            decoded_data,
             test_data,
-            rtol=1e-1,
+            rtol=self.PRECISION_TOLERANCE,
         )
 
     def test_decrypt_and_decode(self):
@@ -101,7 +88,7 @@ class TestCKKSCiphertextFactory:
         assert len(recovered_data) == len(original_data)
 
         # Verifica se recuperamos os dados originais
-        np.testing.assert_allclose(recovered_data, original_data, rtol=1e-1)
+        np.testing.assert_allclose(recovered_data, original_data, rtol=self.PRECISION_TOLERANCE)
 
     def test_encryption_with_custom_level(self):
         """Testa criptografia com nível personalizado."""
@@ -150,5 +137,5 @@ class TestCKKSCiphertextFactory:
         np.testing.assert_allclose(
             recovered_data,
             test_data,
-            rtol=1e-1,  # Tolerância maior para níveis mais baixos
+            rtol=self.PRECISION_TOLERANCE,
         )

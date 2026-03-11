@@ -214,7 +214,7 @@ class CKKSCiphertext:
         rescaled_components = []
         for comp in self.components:
             # Multiplica por q_{ℓ-1}/q_ℓ e arredonda para o inteiro mais próximo
-            scaled_coeffs = (comp.coef * modulus_ratio + 0.5).astype(np.int64)
+            scaled_coeffs = np.round(comp.coef * modulus_ratio).astype(np.int64)
             scaled_poly = Polynomial(scaled_coeffs)
 
             # Reduz para o anel R^n_{q_{ℓ-1}}
@@ -373,19 +373,18 @@ class CKKSCiphertext:
         level = ciphertext.level
         q_ell = crypto_params.MODULUS_CHAIN[level]  # q_ℓ (módulo atual)
         P = crypto_params.P  # Fator auxiliar
-        q0 = crypto_params.Q0
         ring_poly_mod = crypto_params.get_polynomial_modulus_ring()
-
-        d2_ql_Pq = d2 * crypto_params.MODULUS_CHAIN[level] / (P * q0)
 
         # ETAPA 1: Calcular d2 · EVK em R_{P·q_ℓ}
         # EVK está em R_{P·q_L}, d2 está em R_{q_ℓ}
-        # Multiplicamos usando módulo P·q_ℓ como aproximação
-        d2_evk0 = crypto_params.poly_mul_mod(d2_ql_Pq, evk0, q_ell, ring_poly_mod)
-        d2_evk1 = crypto_params.poly_mul_mod(d2_ql_Pq, evk1, q_ell, ring_poly_mod)
+        # A multiplicação deve usar módulo P·q_ℓ para preservar os coeficientes da EVK
+        P_q_ell = P * q_ell
+        d2_evk0 = crypto_params.poly_mul_mod(d2, evk0, P_q_ell, ring_poly_mod)
+        d2_evk1 = crypto_params.poly_mul_mod(d2, evk1, P_q_ell, ring_poly_mod)
 
-        d2_evk0_scaled = np.round(d2_evk0.coef).astype(np.int64)
-        d2_evk1_scaled = np.round(d2_evk1.coef).astype(np.int64)
+        # ETAPA 2: Dividir por P e arredondar: ⌊d2·EVK / P⌋
+        d2_evk0_scaled = np.round(d2_evk0.coef.astype(np.float64) / P).astype(np.int64)
+        d2_evk1_scaled = np.round(d2_evk1.coef.astype(np.float64) / P).astype(np.int64)
 
         d2_evk0_poly = Polynomial(d2_evk0_scaled)
         d2_evk1_poly = Polynomial(d2_evk1_scaled)
@@ -425,10 +424,9 @@ class CKKSCiphertext:
             ct1: Primeiro ciphertext (deve ter 2 componentes)
             ct2: Segundo ciphertext (deve ter 2 componentes)
             evaluation_key: Tupla (evk0, evk1) da Evaluation Key
-            auto_rescale: Se True, aplica rescale automático após multiplicação
 
         Returns:
-            CKKSCiphertext: Resultado da multiplicação completa
+            CKKSCiphertext: Resultado da multiplicação completa em level-1 com escala ≈ Δ
 
         Raises:
             ValueError: Se os ciphertexts não forem compatíveis ou EVK inválida
@@ -466,7 +464,10 @@ class CKKSCiphertext:
         ct_mult_raw = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
 
         # Etapa 2: Relinearização (3 componentes → 2 componentes)
-        ct_result = CKKSCiphertext.relinearize(ct_mult_raw, evaluation_key)
+        ct_relin = CKKSCiphertext.relinearize(ct_mult_raw, evaluation_key)
+
+        # Etapa 3: Rescale (level → level-1, escala Δ² → Δ)
+        ct_result = ct_relin.rescale()
 
         return ct_result
 

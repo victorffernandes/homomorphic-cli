@@ -268,6 +268,10 @@ class CKKSKeyFactory:
             P_q = P * q
             print(f"Aviso: P ajustado para {P} para evitar overflow")
 
+        # Extract the s polynomial from the (1, s) secret key tuples
+        _, s_old = old_secret_key if isinstance(old_secret_key, tuple) else (None, old_secret_key)
+        _, s_new = new_secret_key if isinstance(new_secret_key, tuple) else (None, new_secret_key)
+
         # Sample a ← R_{P·q} (componente aleatório uniforme em R_{P·q})
         a = self.crypto_params.generate_uniform_random_poly(n_degree, P_q)
 
@@ -276,11 +280,11 @@ class CKKSKeyFactory:
 
         # Calcular a · s' (mod P·q)
         a_s_prime = self.crypto_params.poly_mul_mod(
-            a, new_secret_key, P_q, ring_poly_mod
+            a, s_new, P_q, ring_poly_mod
         )
 
         # Calcular P · s (escalar vezes polinômio)
-        P_s = P * old_secret_key
+        P_s = P * s_old
 
         # Calcular ksk0 = [-(a·s' + e) + P·s]_{P·q}
         # Primeiro: -(a·s' + e)

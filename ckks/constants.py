@@ -17,9 +17,11 @@ class CKKSCryptographicParameters:
 
     def __init__(
         self,
-        logN: int = 6,  # log2(N) - log do grau do polinômio (N = 2^logN)
-        logQ: int = 12,  # log2(Q) - log do módulo base (Q = 2^logQ)
-        logp: int = 12,  # log2(Δ) - log do fator de escala (Δ = 2^logp)
+        # Defaults aligned with HEAAN basic tests (run.cpp):
+        # logN=13, logQ=65, logp=30
+        logN: int = 13,  # log2(N) - log do grau do polinômio (N = 2^logN)
+        logQ: int = 65,  # log2(Q) - log do módulo base (Q = 2^logQ)
+        logp: int = 30,  # log2(Δ) - log do fator de escala (Δ = 2^logp)
         gaussian_noise_stddev: float = 3.2,  # σ - desvio padrão gaussiano (padrão HEAAN)
         hamming_weight: int = 64,  # h - peso de Hamming (padrão HEAAN)
         zero_one_density: float = 0.5,  # ρ - densidade ZO
@@ -179,6 +181,25 @@ class CKKSCryptographicParameters:
         return cls(logN=15, logQ=618, logp=56)
 
     @classmethod
+    def precision_multiply_config(cls):
+        """
+        Configuração para multiplicação homomórfica com precisão ~0.01.
+
+        Maior N e cadeia com headroom evitam wraparound; P*qL mantido < 2^63
+        para geração de chaves (int64).
+
+        Returns:
+            CKKSCryptographicParameters: Parâmetros para precisão ~0.01 em multiply
+        """
+        return cls(
+            logN=9,  # N=512 (balanço ruído vs. tempo)
+            logQ=16,  # P=2^32; 2*logQ+total_levels < 63 para int64
+            logp=12,
+            total_levels=29,  # top q=2^29; após rescale q=2^28 >> 14*2^23
+            gaussian_noise_stddev=1.0,  # ruído menor para melhor precisão
+        )
+
+    @classmethod
     def fft_config(cls):
         """
         Configuração para operações FFT recomendada do HEAAN (run.cpp).
@@ -289,17 +310,16 @@ class CKKSCryptographicParameters:
         # ring_poly_mod deve ser X^N + 1, então o grau é N
         degree = len(ring_poly_mod.coef) - 1
 
-        # Extrai coeficientes do polinômio de entrada
-        coeffs = (
-            np.array(p_numpy.coef, dtype=np.int64)
-            if hasattr(p_numpy, "coef")
-            else np.array(p_numpy, dtype=np.int64)
-        )
+        # Extrai coeficientes como Python ints (precisão arbitrária) para evitar
+        # overflow de int64/float64 em produtos que podem exceder 2^63.
+        raw = p_numpy.coef if hasattr(p_numpy, "coef") else p_numpy
+        coeffs = np.array([int(c) for c in raw], dtype=object)
 
         # Garante que temos pelo menos 2*degree coeficientes (preenche com zeros se necessário)
         # Isso corresponde a pp.SetLength(2 * degree) no HEEAN
         if len(coeffs) < 2 * degree:
-            coeffs = np.pad(coeffs, (0, 2 * degree - len(coeffs)), mode="constant")
+            pad = np.zeros(2 * degree - len(coeffs), dtype=object)
+            coeffs = np.concatenate([coeffs, pad])
         elif len(coeffs) > 2 * degree:
             # Trunca para 2*degree (mantém apenas os primeiros 2*N coeficientes)
             coeffs = coeffs[: 2 * degree]
@@ -307,18 +327,17 @@ class CKKSCryptographicParameters:
         # Aplica redução mod X^N + 1 usando padrão HEEAN:
         # Para cada i em [0, degree), res[i] = (pp[i] - pp[i+degree]) mod q
         # Isso funciona porque X^N ≡ -1, então termos em posição i+N contribuem como -X^i
-        #
-        # Implementação vetorizada seguindo padrão HEEAN:
-        # 1. Reduz todos os coeficientes mod q (rem no HEEAN)
-        # 2. Calcula diferença e reduz mod q (SubMod no HEEAN)
-        pp_low = coeffs[:degree] % q_coeff
-        pp_high = coeffs[degree : 2 * degree] % q_coeff
+        q_int = int(q_coeff)
+        pp_low = np.array([int(c) % q_int for c in coeffs[:degree]], dtype=object)
+        pp_high = np.array([int(c) % q_int for c in coeffs[degree: 2 * degree]], dtype=object)
 
-        # SubMod vetorizado: res[i] = (pp[i] - pp[i+degree]) mod q
-        result_coeffs = (pp_low - pp_high) % q_coeff
+        # SubMod: res[i] = (pp[i] - pp[i+degree]) mod q
+        result_coeffs = np.array(
+            [(int(lo) - int(hi)) % q_int for lo, hi in zip(pp_low, pp_high)],
+            dtype=object,
+        )
 
-        # Cria polinômio resultante e aplica mod centrado para CKKS
-        # (HEEAN usa mod padrão, mas CKKS precisa de representação centrada)
+        # Após mod q_int todos os valores cabem em int64 (q_int <= P*q < 2^63)
         result_poly = Polynomial(result_coeffs.astype(np.int64))
         return CKKSCryptographicParameters.poly_coeffs_mod_q(result_poly, q_coeff)
 
@@ -340,8 +359,11 @@ class CKKSCryptographicParameters:
         Returns:
             Polynomial: Resultado da multiplicação modular em R_q
         """
-        # Usa multiplicação nativa de polinômios do NumPy (muito mais eficiente)
-        full_poly = p1 * p2
+        # Converte para Python ints antes de multiplicar para evitar overflow de
+        # int64/float64 — os produtos intermediários podem exceder 2^63.
+        p1_int = Polynomial(np.array([int(c) for c in p1.coef], dtype=object))
+        p2_int = Polynomial(np.array([int(c) for c in p2.coef], dtype=object))
+        full_poly = p1_int * p2_int
 
         # Aplica redução no anel R_q = ℤ_q[X]/(X^N + 1)
         return CKKSCryptographicParameters.poly_ring_mod(full_poly, ring_poly_mod, q)
