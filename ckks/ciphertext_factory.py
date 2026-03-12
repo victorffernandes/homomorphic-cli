@@ -5,6 +5,8 @@ DEPRECATED: Encode/decode methods are deprecated. Use CKKSPlaintext instead.
 This class now focuses on encryption/decryption operations.
 """
 
+import json
+import time
 import numpy as np
 from numpy.polynomial import Polynomial
 from typing import List, Union, Tuple, Dict, Any
@@ -53,8 +55,9 @@ class CKKSCiphertextFactory:
         Returns:
             CKKSCiphertext: Ciphertext resultante
         """
+        # Usa o mesmo nível padrão da chave pública: q_L ≈ Q0 = 2^logQ.
         if level is None:
-            level = len(self.crypto_params.MODULUS_CHAIN) - 1  # Nível mais alto
+            level = self.crypto_params.logQ  # nível operacional padrão
 
         q_mod = self.crypto_params.MODULUS_CHAIN[level]
         n_degree = self.crypto_params.POLYNOMIAL_DEGREE

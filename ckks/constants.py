@@ -1,18 +1,37 @@
 import numpy as np
 from numpy.polynomial import Polynomial
+from .bigint_poly_utils import (
+    mod_centered as bi_mod_centered,
+    poly_coeffs_mod_q as bi_poly_coeffs_mod_q,
+    poly_ring_mod as bi_poly_ring_mod,
+    poly_mul_mod as bi_poly_mul_mod,
+    generate_uniform_random_poly as bi_generate_uniform_random_poly,
+)
 
 
 class CKKSCryptographicParameters:
     """
-    Classe que centraliza todos os parâmetros criptográficos do esquema CKKS.
+    Classe que centraliza todos os parâmetros criptográficos do esquema CKKS
+    em estilo HEAAN.
 
-    Esta classe organiza as constantes de forma semântica, separando:
-    - Parâmetros de segurança
-    - Parâmetros de precisão
-    - Estruturas algébricas
-    - Configurações de ruído
+    Organização:
+    - Parâmetros de segurança e tamanho (logN, logQ)
+    - Parâmetros de precisão (logp, cadeia de módulos)
+    - Estruturas algébricas (R = Z[X]/(X^N + 1))
+    - Configurações de ruído (σ, h, ZO)
 
-    A classe agora suporta parametrização no construtor seguindo a definição KeyGen(1λ).
+    Perfis suportados (espelhando run.cpp do HEAAN):
+    - Default / básico:     logN=13, logQ=65,  logp=30  (testes básicos)
+    - basic_config():       logN=13, logQ=65,  logp=30
+    - power_config():       logN=13, logQ=155, logp=30  (potências profundas)
+    - high_precision_config(): logN=15, logQ=618, logp=56 (alta precisão)
+    - fft_config():         logN=13, logQ=100, logp=42  (FFT)
+    - inverse_config():     logN=14, logQ=255, logp=25  (funções inversas)
+
+    Observação: embora o código aceite parâmetros arbitrários (logN, logQ, logp),
+    ele é otimizado para a faixa de demonstração do HEAAN; configurações muito
+    extremas (por exemplo, logQ≈600) podem exigir mais ajustes na precisão
+    numérica e nos testes para manter erros dentro de tolerâncias muito apertadas.
     """
 
     def __init__(
@@ -250,123 +269,23 @@ class CKKSCryptographicParameters:
     # === FUNÇÕES AUXILIARES PARA OPERAÇÕES POLINOMIAIS ===
     @staticmethod
     def mod_centered(value, modulus):
-        reduced = np.mod(value, modulus)
-
-        half_modulus = modulus / 2
-
-        if np.isscalar(reduced):
-            if reduced > half_modulus:
-                return reduced - modulus
-            return reduced
-        else:
-            # Para arrays
-            result = reduced.copy()
-            mask = result > half_modulus
-            result[mask] = result[mask] - modulus
-            return result
+        # Delegate to bigint-aware helper
+        return bi_mod_centered(value, modulus)
 
     @staticmethod
     def poly_coeffs_mod_q(p_numpy, q_coeff):
-        """
-        Aplica operação modular centrada aos coeficientes de um polinômio.
-
-        Para um polinômio r, [r]_a denota a mesma operação aplicada coeficiente a coeficiente,
-        onde cada coeficiente é reduzido para ℤ_a = (-a/2, a/2].
-
-        Args:
-            p_numpy: Polinômio numpy
-            q_coeff: Coeficiente modular a
-
-        Returns:
-            Polynomial: Polinômio com coeficientes em ℤ_a = (-a/2, a/2]
-        """
-        coeffs = p_numpy.coef.copy()
-        # Aplica mod_centered a todos os coeficientes de uma vez (vetorizado)
-        coeffs = CKKSCryptographicParameters.mod_centered(coeffs, q_coeff)
-        return Polynomial(coeffs.astype(np.int64))
+        """Wrapper para a versão bigint em ckks.bigint_poly_utils."""
+        return bi_poly_coeffs_mod_q(p_numpy, q_coeff)
 
     @staticmethod
     def poly_ring_mod(p_numpy, ring_poly_mod, q_coeff):
-        """
-        Aplica redução modular no anel polinomial R_q = ℤ_q[X]/(X^N + 1).
-
-        Implementação baseada em HEEAN usando redução eficiente:
-        - Explora X^N ≡ -1 mod (X^N + 1)
-        - Para polinômio p: res[i] = (pp[i] - pp[i+N]) mod q
-
-        Este método realiza duas reduções:
-        1. Redução polinomial: p_numpy mod (X^N + 1) - reduz grau para < N
-        2. Redução dos coeficientes: coeficientes mod q - reduz valores para ℤ_q
-
-        Args:
-            p_numpy: Polinômio numpy (grau pode ser até 2N-2)
-            ring_poly_mod: Polinômio de módulo do anel (tipicamente X^N + 1)
-            q_coeff: Coeficiente modular
-
-        Returns:
-            Polynomial: Polinômio reduzido no anel R_q
-        """
-        # Extrai o grau N do polinômio de módulo (X^N + 1)
-        # ring_poly_mod deve ser X^N + 1, então o grau é N
-        degree = len(ring_poly_mod.coef) - 1
-
-        # Extrai coeficientes como Python ints (precisão arbitrária) para evitar
-        # overflow de int64/float64 em produtos que podem exceder 2^63.
-        raw = p_numpy.coef if hasattr(p_numpy, "coef") else p_numpy
-        coeffs = np.array([int(c) for c in raw], dtype=object)
-
-        # Garante que temos pelo menos 2*degree coeficientes (preenche com zeros se necessário)
-        # Isso corresponde a pp.SetLength(2 * degree) no HEEAN
-        if len(coeffs) < 2 * degree:
-            pad = np.zeros(2 * degree - len(coeffs), dtype=object)
-            coeffs = np.concatenate([coeffs, pad])
-        elif len(coeffs) > 2 * degree:
-            # Trunca para 2*degree (mantém apenas os primeiros 2*N coeficientes)
-            coeffs = coeffs[: 2 * degree]
-
-        # Aplica redução mod X^N + 1 usando padrão HEEAN:
-        # Para cada i em [0, degree), res[i] = (pp[i] - pp[i+degree]) mod q
-        # Isso funciona porque X^N ≡ -1, então termos em posição i+N contribuem como -X^i
-        q_int = int(q_coeff)
-        pp_low = np.array([int(c) % q_int for c in coeffs[:degree]], dtype=object)
-        pp_high = np.array([int(c) % q_int for c in coeffs[degree: 2 * degree]], dtype=object)
-
-        # SubMod: res[i] = (pp[i] - pp[i+degree]) mod q
-        result_coeffs = np.array(
-            [(int(lo) - int(hi)) % q_int for lo, hi in zip(pp_low, pp_high)],
-            dtype=object,
-        )
-
-        # Após mod q_int todos os valores cabem em int64 (q_int <= P*q < 2^63)
-        result_poly = Polynomial(result_coeffs.astype(np.int64))
-        return CKKSCryptographicParameters.poly_coeffs_mod_q(result_poly, q_coeff)
+        """Wrapper para a versão bigint em ckks.bigint_poly_utils."""
+        return bi_poly_ring_mod(p_numpy, ring_poly_mod, q_coeff)
 
     @staticmethod
     def poly_mul_mod(p1, p2, q, ring_poly_mod):
-        """
-        Multiplicação de polinômios com redução modular no anel R_q.
-
-        Realiza a multiplicação p1 * p2 e aplica redução modular no anel
-        R_q = ℤ_q[X]/(X^N + 1), garantindo que o resultado tenha grau < N
-        e coeficientes em ℤ_q = (-q/2, q/2].
-
-        Args:
-            p1: Primeiro polinômio (Polynomial)
-            p2: Segundo polinômio (Polynomial)
-            q: Módulo para os coeficientes
-            ring_poly_mod: Polinômio de módulo do anel (tipicamente X^N + 1)
-
-        Returns:
-            Polynomial: Resultado da multiplicação modular em R_q
-        """
-        # Converte para Python ints antes de multiplicar para evitar overflow de
-        # int64/float64 — os produtos intermediários podem exceder 2^63.
-        p1_int = Polynomial(np.array([int(c) for c in p1.coef], dtype=object))
-        p2_int = Polynomial(np.array([int(c) for c in p2.coef], dtype=object))
-        full_poly = p1_int * p2_int
-
-        # Aplica redução no anel R_q = ℤ_q[X]/(X^N + 1)
-        return CKKSCryptographicParameters.poly_ring_mod(full_poly, ring_poly_mod, q)
+        """Wrapper para a versão bigint em ckks.bigint_poly_utils."""
+        return bi_poly_mul_mod(p1, p2, q, ring_poly_mod)
 
     def generate_gaussian_poly(self, degree_n=None, sigma_val=None):
         """
@@ -478,8 +397,7 @@ class CKKSCryptographicParameters:
         if q_bound is None:
             q_bound = self.get_initial_modulus()
 
-        coeffs = np.random.randint(0, q_bound, size=degree_n, dtype=np.int64)
-        return Polynomial(coeffs)
+        return bi_generate_uniform_random_poly(degree_n, q_bound)
 
 
 # Validação automática dos parâmetros

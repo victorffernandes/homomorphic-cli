@@ -98,8 +98,10 @@ class CKKSKeyFactory:
         Returns:
             Tuple[Polynomial, Polynomial]: Tupla (b, a) da chave pública
         """
+        # Usa, por padrão, o módulo base Q0 = 2^logQ em vez do topo da cadeia (P = Q^2),
+        # pois HEAAN define a chave pública em R_{q_L} com q_L ≈ Q, não Q^2.
         if level is None:
-            level = len(self.crypto_params.MODULUS_CHAIN) - 1
+            level = self.crypto_params.logQ
 
         # Extrai o componente s de sk = (1, s)
         _, s = secret_key
@@ -152,8 +154,9 @@ class CKKSKeyFactory:
         Returns:
             Tuple[Polynomial, Polynomial]: Tupla (b', a') da evaluation key
         """
+        # Gera EVK no mesmo nível q_L usado para a chave pública (tipicamente logQ).
         if level is None:
-            level = len(self.crypto_params.MODULUS_CHAIN) - 1
+            level = self.crypto_params.logQ
 
         # Extrai o componente s de sk = (1, s)
         _, s = secret_key
@@ -247,8 +250,9 @@ class CKKSKeyFactory:
                 - ksk0 = [-(a·s' + e) + P·s]_{P·q}
                 - ksk1 = a
         """
+        # Usa, por padrão, o mesmo nível q da chave pública (logQ).
         if level is None:
-            level = len(self.crypto_params.MODULUS_CHAIN) - 1
+            level = self.crypto_params.logQ
 
         n_degree = self.crypto_params.POLYNOMIAL_DEGREE
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
@@ -259,14 +263,7 @@ class CKKSKeyFactory:
         if P is None:
             P = self.crypto_params.P
 
-        P_q = P * q  # P · q
-
-        # Verificar overflow
-        max_int64 = 2**63 - 1
-        if P_q > max_int64:
-            P = max_int64 // q
-            P_q = P * q
-            print(f"Aviso: P ajustado para {P} para evitar overflow")
+        P_q = P * q  # P · q (pode ser muito grande; usamos aritmética de precisão arbitrária)
 
         # Extract the s polynomial from the (1, s) secret key tuples
         _, s_old = old_secret_key if isinstance(old_secret_key, tuple) else (None, old_secret_key)
@@ -317,6 +314,8 @@ class CKKSKeyFactory:
                 - secret_key: sk = (1, s) onde s ← HWT(h)
                 - public_key: (b, a) onde b ← −as + e (mod qL)
         """
+        if level is None:
+            level = self.crypto_params.logQ
         secret_key = self.generate_secret_key(hamming_weight)
         public_key = self.generate_public_key(secret_key, level)
         return secret_key, public_key
@@ -337,6 +336,8 @@ class CKKSKeyFactory:
                 - 'public_key': (b, a)
                 - 'evaluation_key': (b', a')
         """
+        if level is None:
+            level = self.crypto_params.logQ
         secret_key = self.generate_secret_key(hamming_weight)
         public_key = self.generate_public_key(secret_key, level)
         evaluation_key = self.generate_evaluation_key(secret_key, level)
@@ -366,7 +367,7 @@ class CKKSKeyFactory:
         """
         try:
             if level is None:
-                level = len(self.crypto_params.MODULUS_CHAIN) - 1
+                level = self.crypto_params.logQ
 
             pk_b, pk_a = public_key
             ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()

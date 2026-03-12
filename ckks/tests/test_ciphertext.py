@@ -95,6 +95,7 @@ class TestCKKSCiphertext:
             self.crypto_params,
             ct_mult_relin.scale,
             q_mod=True,
+            q_mod_value=ct_mult_relin.current_modulus,
         )
 
         expected_product = m1[:2] * m2[:2]

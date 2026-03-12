@@ -5,10 +5,20 @@ Esta classe encapsula todas as informações necessárias para um ciphertext CKK
 incluindo componentes, nível, escala e metadados.
 """
 
+import json
+import time
 import numpy as np
 from numpy.polynomial import Polynomial
 from typing import List, Optional
 from .constants import CKKSCryptographicParameters
+
+# #region agent log
+def _debug_log(*args, **kwargs) -> None:
+    """No-op debug logger (instrumentation cleaned)."""
+    return None
+
+
+# #endregion
 
 
 class CKKSCiphertext:
@@ -211,10 +221,23 @@ class CKKSCiphertext:
         # Este fator é menor que 1, pois q_{ℓ-1} < q_ℓ no CKKS
         modulus_ratio = q_target / q_current
 
+        # #region agent log
+        _debug_log("ckks_ciphertext.py:rescale", "rescale start", {"level": self.level, "target_level": target_level, "scale_before": self.scale if isinstance(self.scale, (int, float)) else str(self.scale)[:60], "q_current_bits": int(q_current).bit_length(), "q_target_bits": int(q_target).bit_length(), "modulus_ratio": float(modulus_ratio) if isinstance(modulus_ratio, (int, float)) and abs(modulus_ratio) < 1e100 else str(modulus_ratio)[:40]}, "B")
+        # #endregion
+
+        q_bits = int(q_target).bit_length()
         rescaled_components = []
         for comp in self.components:
             # Multiplica por q_{ℓ-1}/q_ℓ e arredonda para o inteiro mais próximo
-            scaled_coeffs = np.round(comp.coef * modulus_ratio).astype(np.int64)
+            if q_bits <= 62:
+                coeffs_float = np.array(comp.coef, dtype=np.float64)
+                scaled_coeffs = np.round(coeffs_float * modulus_ratio).astype(np.int64)
+            else:
+                # Para módulos grandes, manter coeficientes como ints Python
+                scaled_list = [
+                    int(round(float(c) * modulus_ratio)) for c in comp.coef
+                ]
+                scaled_coeffs = np.array(scaled_list, dtype=object)
             scaled_poly = Polynomial(scaled_coeffs)
 
             # Reduz para o anel R^n_{q_{ℓ-1}}
@@ -227,6 +250,10 @@ class CKKSCiphertext:
         # Se p = q_ℓ / q_{ℓ-1}, então q_{ℓ-1}/q_ℓ = 1/p
         # Logo: new_scale = old_scale * (q_{ℓ-1}/q_ℓ) = old_scale / p
         new_scale = self.scale * modulus_ratio
+
+        # #region agent log
+        _debug_log("ckks_ciphertext.py:rescale", "rescale end", {"new_scale": new_scale if isinstance(new_scale, (int, float)) else str(new_scale)[:60]}, "B")
+        # #endregion
 
         return CKKSCiphertext(
             components=rescaled_components,
@@ -382,9 +409,45 @@ class CKKSCiphertext:
         d2_evk0 = crypto_params.poly_mul_mod(d2, evk0, P_q_ell, ring_poly_mod)
         d2_evk1 = crypto_params.poly_mul_mod(d2, evk1, P_q_ell, ring_poly_mod)
 
-        # ETAPA 2: Dividir por P e arredondar: ⌊d2·EVK / P⌋
-        d2_evk0_scaled = np.round(d2_evk0.coef.astype(np.float64) / P).astype(np.int64)
-        d2_evk1_scaled = np.round(d2_evk1.coef.astype(np.float64) / P).astype(np.int64)
+        # ETAPA 2: Calcular ⌊(q_ℓ/P)·d2·EVK⌋ (multiplicar por q_ℓ, depois dividir por P e arredondar).
+        # Para P ou coeficientes grandes, float64 perde precisão; usar divisão inteira.
+        q_bits = int(q_ell).bit_length()
+        P_int = int(P)
+        q_ell_int = int(q_ell)
+
+        def _round_div(c: int, P_val: int):
+            c = int(c)
+            if c >= 0:
+                return (c + P_val // 2) // P_val
+            return -(((-c) + P_val // 2) // P_val)
+
+        if q_bits <= 62:
+            # (d2·EVK)·q_ℓ / P com float só quando cabem em float64
+            d2_evk0_scaled = np.round(
+                d2_evk0.coef.astype(np.float64) * q_ell_int / P_int
+            ).astype(np.int64)
+            d2_evk1_scaled = np.round(
+                d2_evk1.coef.astype(np.float64) * q_ell_int / P_int
+            ).astype(np.int64)
+        else:
+            # (c * q_ℓ + P/2) // P para cada coeficiente c
+            d2_evk0_scaled = np.array(
+                [_round_div(int(c) * q_ell_int, P_int) for c in d2_evk0.coef],
+                dtype=object,
+            )
+            d2_evk1_scaled = np.array(
+                [_round_div(int(c) * q_ell_int, P_int) for c in d2_evk1.coef],
+                dtype=object,
+            )
+
+        # #region agent log
+        try:
+            max_d2_evk0 = max(abs(int(c)) for c in d2_evk0.coef) if hasattr(d2_evk0.coef, "__iter__") else 0
+            max_scaled0 = max(abs(int(c)) for c in d2_evk0_scaled) if hasattr(d2_evk0_scaled, "__iter__") else 0
+            _debug_log("ckks_ciphertext.py:relinearize", "after divide by P", {"P_bits": int(P).bit_length(), "q_ell_bits": q_bits, "max_abs_d2_evk0": str(max_d2_evk0)[:80], "max_abs_d2_evk0_scaled": str(max_scaled0)[:80], "dtype_scaled": str(d2_evk0_scaled.dtype), "q_bits_leq_62": q_bits <= 62}, "A")
+        except Exception as e:
+            _debug_log("ckks_ciphertext.py:relinearize", "log_err", {"error": str(e)}, "A")
+        # #endregion
 
         d2_evk0_poly = Polynomial(d2_evk0_scaled)
         d2_evk1_poly = Polynomial(d2_evk1_scaled)
@@ -545,13 +608,23 @@ class CKKSCiphertext:
 
         # Aplicar escalonamento e arredondamento: ⌊(KSK · C₂ · q_ℓ) / (P · q_ℓ)⌋
         # Simplifica para: ⌊(KSK · C₂) / P⌋
-        # Dividir por P e arredondar
-        ksk0_C2_scaled_coeffs = np.round(ksk0_C2.coef.astype(np.float64) / P).astype(
-            np.int64
-        )
-        ksk1_C2_scaled_coeffs = np.round(ksk1_C2.coef.astype(np.float64) / P).astype(
-            np.int64
-        )
+        # Dividir por P e arredondar. Para módulos grandes, evitamos restringir a int64.
+        q_bits = int(q_ell).bit_length()
+        if q_bits <= 62:
+            ksk0_C2_scaled_coeffs = np.round(
+                ksk0_C2.coef.astype(np.float64) / P
+            ).astype(np.int64)
+            ksk1_C2_scaled_coeffs = np.round(
+                ksk1_C2.coef.astype(np.float64) / P
+            ).astype(np.int64)
+        else:
+            # Coeficientes potencialmente muito grandes: mantemos como ints Python
+            ksk0_C2_scaled_coeffs = np.round(
+                ksk0_C2.coef.astype(np.float64) / P
+            ).astype(object)
+            ksk1_C2_scaled_coeffs = np.round(
+                ksk1_C2.coef.astype(np.float64) / P
+            ).astype(object)
 
         # Criar polinômios com coeficientes arredondados
         ksk0_C2_scaled = Polynomial(ksk0_C2_scaled_coeffs)

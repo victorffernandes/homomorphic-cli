@@ -8,11 +8,21 @@ Uses HEAAN's special FFT with cyclotomic roots (5-power subgroup)
 for the canonical embedding in R = Z[X]/(X^N + 1).
 """
 
+import json
+import time
 import numpy as np
 from numpy.polynomial import Polynomial
 from typing import List, Union
 from .constants import CKKSCryptographicParameters
 from .canonical_embedding import get_fft_tables, fft_special, fft_special_inv
+
+# #region agent log
+def _debug_log(*args, **kwargs) -> None:
+    """No-op debug logger (instrumentation cleaned)."""
+    return None
+
+
+# #endregion
 
 
 class CKKSPlaintext:
@@ -197,8 +207,9 @@ class CKKSPlaintext:
         p = Polynomial(corrected_coeffs)
         z = CKKSPlaintext.sigma(p, crypto_params)
         rescaled_z = z / scale
+        decoded = np.real(rescaled_z)
 
-        return np.real(rescaled_z)
+        return decoded
 
     # -------------------------------------------------------------------------
     # HEAAN-aligned plaintext operations
