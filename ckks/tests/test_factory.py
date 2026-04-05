@@ -15,7 +15,7 @@ from ckks.key_factory import create_key_factory
 class TestCKKSCiphertextFactory:
     """Testes para a classe CKKSCiphertextFactory."""
 
-    PRECISION_TOLERANCE = 1e-1
+    PRECISION_TOLERANCE = 1e-2
 
     def test_factory_creation(self):
         """Testa criação da fábrica."""
@@ -41,7 +41,7 @@ class TestCKKSCiphertextFactory:
         # Verifica se o ciphertext foi criado corretamente
         assert hasattr(ciphertext, "components")
         assert len(ciphertext.components) == 2
-        assert ciphertext.level == len(factory.crypto_params.MODULUS_CHAIN) - 1
+        assert ciphertext.level == factory.crypto_params.logQ
 
         # Descriptografa e decodifica
         decoded_data = factory.decrypt_and_decode(

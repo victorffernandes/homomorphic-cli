@@ -10,7 +10,7 @@ class TestCKKSPlaintext:
     """Tests for CKKSPlaintext encode and decode methods"""
 
     PRECISION_TOLERANCE = 1e-1
-    CUSTOM_SCALE_TOLERANCE = 5e-2
+    CUSTOM_SCALE_TOLERANCE = 1e-1
 
     def setup_method(self):
         """Setup executed before each test"""

@@ -9,17 +9,9 @@ import json
 import time
 import numpy as np
 from numpy.polynomial import Polynomial
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from .constants import CKKSCryptographicParameters
-
-# #region agent log
-def _debug_log(*args, **kwargs) -> None:
-    """No-op debug logger (instrumentation cleaned)."""
-    return None
-
-
-# #endregion
-
+from .int_backend import cast_array_to_backend
 
 class CKKSCiphertext:
     """
@@ -77,6 +69,9 @@ class CKKSCiphertext:
         self.components = components.copy()
         self.level = level
 
+        # Campo opcional para depuração de multiplicação
+        self.debug_mult: Dict[str, Any] = {}
+
     def _validate_initialization_params(self, components: List[Polynomial], level: int):
         """Valida os parâmetros de inicialização."""
         if not components:
@@ -98,6 +93,47 @@ class CKKSCiphertext:
     def size(self) -> int:
         """Retorna o número de componentes do ciphertext."""
         return len(self.components)
+
+    @property
+    def modulus_bits(self) -> int:
+        """Retorna o número de bits do módulo atual."""
+        return int(self.current_modulus).bit_length()
+
+    @property
+    def scale_bits(self) -> Optional[float]:
+        """Retorna uma aproximação em bits da escala (se numérica)."""
+        try:
+            if isinstance(self.scale, (int, float)) and self.scale > 0:
+                return float(np.log2(self.scale))
+        except Exception:
+            return None
+        return None
+
+    @property
+    def coeff_stats(self) -> Dict[str, Any]:
+        """
+        Retorna estatísticas simples dos coeficientes para depuração:
+        - max_abs por componente
+        - dtype e número de coeficientes
+        """
+        stats = []
+        for idx, comp in enumerate(self.components):
+            coeffs = np.array(comp.coef)
+            max_abs = float(np.max(np.abs(coeffs))) if coeffs.size > 0 else 0.0
+            stats.append(
+                {
+                    "index": idx,
+                    "max_abs": max_abs,
+                    "len": int(coeffs.size),
+                    "dtype": str(coeffs.dtype),
+                }
+            )
+        return {
+            "level": int(self.level),
+            "scale": float(self.scale) if isinstance(self.scale, (int, float)) else str(self.scale),
+            "modulus_bits": self.modulus_bits,
+            "components": stats,
+        }
 
     def can_multiply_with(self, other: "CKKSCiphertext") -> bool:
         """
@@ -183,88 +219,9 @@ class CKKSCiphertext:
             crypto_params=crypto_params,
         )
 
-    def rescale(self, target_level: int = None) -> "CKKSCiphertext":
-        """
-        Realiza operação de rescale conforme definição do paper CKKS.
-
-        RS_{ℓ→ℓ'}(c): Para um ciphertext c ∈ R_q^k no nível ℓ e nível inferior ℓ' < ℓ,
-        produz c' ← ⌊(q_{ℓ'}/q_ℓ) * c⌉ em R_{q_{ℓ'}}^k.
-
-        Args:
-            ct: Ciphertext CKKS para rescalonar
-            target_level: Nível alvo (usa level-1 se None)
-
-        Returns:
-            CKKSCiphertext: Novo ciphertext rescalonado
-
-        Raises:
-            ValueError: Se não há mais níveis para rescalonar
-        """
-        if self.level == 0:
-            raise ValueError("Não há mais níveis para rescalonar.")
-
-        # Determina o nível alvo
-        if target_level is None:
-            target_level = self.level - 1
-
-        if target_level < 0 or target_level >= self.level:
-            raise ValueError(f"Nível alvo inválido: {target_level}")
-
-        # Obter módulos da cadeia
-        q_current = self.crypto_params.MODULUS_CHAIN[self.level]  # q_ℓ (módulo atual)
-        q_target = self.crypto_params.MODULUS_CHAIN[
-            target_level
-        ]  # q_{ℓ-1} (módulo alvo)
-        ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
-
-        # Calcula o fator de escala entre os módulos: q_{ℓ-1}/q_ℓ
-        # Este fator é menor que 1, pois q_{ℓ-1} < q_ℓ no CKKS
-        modulus_ratio = q_target / q_current
-
-        # #region agent log
-        _debug_log("ckks_ciphertext.py:rescale", "rescale start", {"level": self.level, "target_level": target_level, "scale_before": self.scale if isinstance(self.scale, (int, float)) else str(self.scale)[:60], "q_current_bits": int(q_current).bit_length(), "q_target_bits": int(q_target).bit_length(), "modulus_ratio": float(modulus_ratio) if isinstance(modulus_ratio, (int, float)) and abs(modulus_ratio) < 1e100 else str(modulus_ratio)[:40]}, "B")
-        # #endregion
-
-        q_bits = int(q_target).bit_length()
-        rescaled_components = []
-        for comp in self.components:
-            # Multiplica por q_{ℓ-1}/q_ℓ e arredonda para o inteiro mais próximo
-            if q_bits <= 62:
-                coeffs_float = np.array(comp.coef, dtype=np.float64)
-                scaled_coeffs = np.round(coeffs_float * modulus_ratio).astype(np.int64)
-            else:
-                # Para módulos grandes, manter coeficientes como ints Python
-                scaled_list = [
-                    int(round(float(c) * modulus_ratio)) for c in comp.coef
-                ]
-                scaled_coeffs = np.array(scaled_list, dtype=object)
-            scaled_poly = Polynomial(scaled_coeffs)
-
-            # Reduz para o anel R^n_{q_{ℓ-1}}
-            comp_mod = self.crypto_params.poly_ring_mod(
-                scaled_poly, ring_poly_mod, q_target
-            )
-            rescaled_components.append(comp_mod)
-
-        # A nova escala é ajustada pelo mesmo fator q_{ℓ-1}/q_ℓ
-        # Se p = q_ℓ / q_{ℓ-1}, então q_{ℓ-1}/q_ℓ = 1/p
-        # Logo: new_scale = old_scale * (q_{ℓ-1}/q_ℓ) = old_scale / p
-        new_scale = self.scale * modulus_ratio
-
-        # #region agent log
-        _debug_log("ckks_ciphertext.py:rescale", "rescale end", {"new_scale": new_scale if isinstance(new_scale, (int, float)) else str(new_scale)[:60]}, "B")
-        # #endregion
-
-        return CKKSCiphertext(
-            components=rescaled_components,
-            level=target_level,
-            crypto_params=self.crypto_params,
-            scale=new_scale,
-        )
-
     @staticmethod
-    def raw_multiply_homomorphic(
-        ct1: "CKKSCiphertext", ct2: "CKKSCiphertext"
+    def multiply_homomorphic(
+        ct1: "CKKSCiphertext", ct2: "CKKSCiphertext", evaluation_key: tuple
     ) -> "CKKSCiphertext":
         """
         Realiza multiplicação homomórfica raw conforme definição do paper CKKS.
@@ -301,238 +258,43 @@ class CKKSCiphertext:
         crypto_params = ct1.crypto_params
         P_RING_MOD = crypto_params.get_polynomial_modulus_ring()
 
-        # Extrair componentes: c1 = (b1, a1), c2 = (b2, a2)
+
         b1 = ct1.get_component(0)  # c0 do primeiro ciphertext
         a1 = ct1.get_component(1)  # c1 do primeiro ciphertext
         b2 = ct2.get_component(0)  # c0 do segundo ciphertext
         a2 = ct2.get_component(1)  # c1 do segundo ciphertext
 
-        # Calcular multiplicação conforme paper CKKS:
-        # d0 = b1 * b2 (mod q_ℓ)
-        d0 = b1 * b2
+        evkax, evkbx = evaluation_key
 
-        # d1 = a1 * b2 + a2 * b1 (mod q_ℓ)
-        a1_b2 = a1 * b2
-        a2_b1 = a2 * b1
-        d1 = a1_b2 + a2_b1
+        axbx1 = crypto_params.poly_ring_mod(a1 + b1, P_RING_MOD, ct1.current_modulus)
+        axbx2 = crypto_params.poly_ring_mod(a2 + b2, P_RING_MOD, ct2.current_modulus)
+        axbx1 = crypto_params.poly_ring_mod(axbx1 * axbx2, P_RING_MOD, ct1.current_modulus)
 
-        # d2 = a1 * a2 (mod q_ℓ)
-        d2 = a1 * a2
+        axax = crypto_params.poly_ring_mod(a1 * a2, P_RING_MOD, ct1.current_modulus)
+        bxbx = crypto_params.poly_ring_mod(b1 * b2, P_RING_MOD, ct1.current_modulus)
 
-        components = [d0, d1, d2]
+        qQ = 1 << crypto_params.logQ * ct1.current_modulus
+
+        axmult = crypto_params.poly_mul_mod(axax, evkax, qQ, P_RING_MOD)
+        bxmult = crypto_params.poly_mul_mod(axax, evkbx, qQ, P_RING_MOD)
+
+        axmult = crypto_params.poly_ring_mod(axmult, P_RING_MOD, 1 << crypto_params.logQ)
+        bxmult = crypto_params.poly_ring_mod(bxmult, P_RING_MOD, 1 << crypto_params.logQ)
+
+        axmult = crypto_params.poly_ring_mod(axmult + axbx1, P_RING_MOD, ct1.current_modulus)
+        axmult = crypto_params.poly_ring_mod(axmult - bxbx, P_RING_MOD, ct1.current_modulus)
+
+        axmult = crypto_params.poly_ring_mod(axmult - axax, P_RING_MOD, ct1.current_modulus)
+        axmult = crypto_params.poly_ring_mod(axmult + bxbx, P_RING_MOD, ct1.current_modulus)
         
-        components = [
-            crypto_params.poly_ring_mod(
-                comp,
-                P_RING_MOD,
-                ct1.current_modulus,
-            )
-            for comp in components
-        ]
-
-        # A nova escala é o produto das escalas dos ciphertexts de entrada
-        # conforme paper CKKS: scale_mult = scale1 * scale2
         new_scale = ct1.scale * ct2.scale
 
         return CKKSCiphertext(
-            components=components,
+            components=[axmult, bxmult],
             level=level,
             crypto_params=crypto_params,
             scale=new_scale,
         )
-
-    @staticmethod
-    def relinearize(
-        ciphertext: "CKKSCiphertext", evaluation_key: tuple
-    ) -> "CKKSCiphertext":
-        """
-        Relineariza um ciphertext de 3 componentes para 2 componentes usando a Evaluation Key.
-
-        Conforme paper CKKS, para ct = (d0, d1, d2) e EVK = (evk0, evk1) ∈ R²_{P·q_L}:
-
-        Relin_{EVK}(ct) = (d0, d1) + ⌊(q_ℓ/P) · d2 · EVK⌋_{q_ℓ}
-                        = (d0 + ⌊(q_ℓ/P)·d2·evk0⌋, d1 + ⌊(q_ℓ/P)·d2·evk1⌋)
-
-        Processo:
-        1. Calcular d2 · EVK em R_{P·q_ℓ}
-        2. Multiplicar por (q_ℓ/P) e arredondar
-        3. Adicionar a (d0, d1)
-        4. Reduzir módulo q_ℓ
-
-        onde:
-        - EVK está em R_{P·q_L} (módulo P·q_L)
-        - d2 está em R_{q_ℓ} (módulo q_ℓ)
-        - O resultado final está em R_{q_ℓ}
-        - ⌊·⌋ denota arredondamento para o inteiro mais próximo
-
-        Args:
-            ciphertext: Ciphertext de 3 componentes para relinearizar
-            evaluation_key: Tupla (evk0, evk1) da Evaluation Key em R_{P·q_L}
-
-        Returns:
-            CKKSCiphertext: Novo ciphertext com 2 componentes
-
-        Raises:
-            ValueError: Se o ciphertext não tiver exatamente 3 componentes
-        """
-        if ciphertext.size != 3:
-            raise ValueError(
-                f"Relinearização requer ciphertext com exatamente 3 componentes. "
-                f"Recebido: {ciphertext.size} componentes"
-            )
-
-        if len(evaluation_key) != 2:
-            raise ValueError(
-                f"Evaluation Key deve ter exatamente 2 componentes. "
-                f"Recebido: {len(evaluation_key)} componentes"
-            )
-
-        # Extrair componentes do ciphertext
-        d0 = ciphertext.components[0]  # Termo constante
-        d1 = ciphertext.components[1]  # Termo linear
-        d2 = ciphertext.components[2]  # Termo quadrático
-
-        # Extrair componentes da Evaluation Key
-        evk0, evk1 = evaluation_key
-
-        # Obter parâmetros criptográficos
-        crypto_params = ciphertext.crypto_params
-        level = ciphertext.level
-        q_ell = crypto_params.MODULUS_CHAIN[level]  # q_ℓ (módulo atual)
-        P = crypto_params.P  # Fator auxiliar
-        ring_poly_mod = crypto_params.get_polynomial_modulus_ring()
-
-        # ETAPA 1: Calcular d2 · EVK em R_{P·q_ℓ}
-        # EVK está em R_{P·q_L}, d2 está em R_{q_ℓ}
-        # A multiplicação deve usar módulo P·q_ℓ para preservar os coeficientes da EVK
-        P_q_ell = P * q_ell
-        d2_evk0 = crypto_params.poly_mul_mod(d2, evk0, P_q_ell, ring_poly_mod)
-        d2_evk1 = crypto_params.poly_mul_mod(d2, evk1, P_q_ell, ring_poly_mod)
-
-        # ETAPA 2: Calcular ⌊(q_ℓ/P)·d2·EVK⌋ (multiplicar por q_ℓ, depois dividir por P e arredondar).
-        # Para P ou coeficientes grandes, float64 perde precisão; usar divisão inteira.
-        q_bits = int(q_ell).bit_length()
-        P_int = int(P)
-        q_ell_int = int(q_ell)
-
-        def _round_div(c: int, P_val: int):
-            c = int(c)
-            if c >= 0:
-                return (c + P_val // 2) // P_val
-            return -(((-c) + P_val // 2) // P_val)
-
-        if q_bits <= 62:
-            # (d2·EVK)·q_ℓ / P com float só quando cabem em float64
-            d2_evk0_scaled = np.round(
-                d2_evk0.coef.astype(np.float64) * q_ell_int / P_int
-            ).astype(np.int64)
-            d2_evk1_scaled = np.round(
-                d2_evk1.coef.astype(np.float64) * q_ell_int / P_int
-            ).astype(np.int64)
-        else:
-            # (c * q_ℓ + P/2) // P para cada coeficiente c
-            d2_evk0_scaled = np.array(
-                [_round_div(int(c) * q_ell_int, P_int) for c in d2_evk0.coef],
-                dtype=object,
-            )
-            d2_evk1_scaled = np.array(
-                [_round_div(int(c) * q_ell_int, P_int) for c in d2_evk1.coef],
-                dtype=object,
-            )
-
-        # #region agent log
-        try:
-            max_d2_evk0 = max(abs(int(c)) for c in d2_evk0.coef) if hasattr(d2_evk0.coef, "__iter__") else 0
-            max_scaled0 = max(abs(int(c)) for c in d2_evk0_scaled) if hasattr(d2_evk0_scaled, "__iter__") else 0
-            _debug_log("ckks_ciphertext.py:relinearize", "after divide by P", {"P_bits": int(P).bit_length(), "q_ell_bits": q_bits, "max_abs_d2_evk0": str(max_d2_evk0)[:80], "max_abs_d2_evk0_scaled": str(max_scaled0)[:80], "dtype_scaled": str(d2_evk0_scaled.dtype), "q_bits_leq_62": q_bits <= 62}, "A")
-        except Exception as e:
-            _debug_log("ckks_ciphertext.py:relinearize", "log_err", {"error": str(e)}, "A")
-        # #endregion
-
-        d2_evk0_poly = Polynomial(d2_evk0_scaled)
-        d2_evk1_poly = Polynomial(d2_evk1_scaled)
-
-        # ETAPA 3: Adicionar a (d0, d1)
-        # (c0', c1') = (d0, d1) + ⌊(q_ℓ/P)·d2·EVK⌋
-        c0_prime = d0 + d2_evk0_poly
-        c1_prime = d1 + d2_evk1_poly
-
-        # ETAPA 4: Aplicar redução modular em R_{q_ℓ}
-        c0_final = crypto_params.poly_ring_mod(c0_prime, ring_poly_mod, q_ell)
-        c1_final = crypto_params.poly_ring_mod(c1_prime, ring_poly_mod, q_ell)
-
-        # A relinearização preserva a escala do ciphertext de entrada
-        return CKKSCiphertext(
-            components=[c0_final, c1_final],
-            level=level,
-            crypto_params=crypto_params,
-            scale=ciphertext.scale,
-        )
-
-    @staticmethod
-    def multiply_homomorphic(
-        ct1: "CKKSCiphertext",
-        ct2: "CKKSCiphertext",
-        evaluation_key: tuple,
-    ) -> "CKKSCiphertext":
-        """
-        Multiplica dois ciphertexts homomorficamente seguindo o paper CKKS.
-
-        Processo completo conforme CKKS paper:
-        1. Multiplicação raw (resulta em 3 componentes)
-        2. Relinearização usando EVK (reduz para 2 componentes)
-        3. Rescale (reduz nível e normaliza escala)
-
-        Args:
-            ct1: Primeiro ciphertext (deve ter 2 componentes)
-            ct2: Segundo ciphertext (deve ter 2 componentes)
-            evaluation_key: Tupla (evk0, evk1) da Evaluation Key
-
-        Returns:
-            CKKSCiphertext: Resultado da multiplicação completa em level-1 com escala ≈ Δ
-
-        Raises:
-            ValueError: Se os ciphertexts não forem compatíveis ou EVK inválida
-        """
-        # Validações de entrada
-        if ct1.size != 2:
-            raise ValueError(
-                f"ct1 deve ter exatamente 2 componentes. Recebido: {ct1.size}"
-            )
-
-        if ct2.size != 2:
-            raise ValueError(
-                f"ct2 deve ter exatamente 2 componentes. Recebido: {ct2.size}"
-            )
-
-        if len(evaluation_key) != 2:
-            raise ValueError(
-                f"Evaluation Key deve ter exatamente 2 componentes. "
-                f"Recebido: {len(evaluation_key)}"
-            )
-
-        # Verificar compatibilidade dos ciphertexts
-        if ct1.level != ct2.level:
-            raise ValueError(
-                f"Ciphertexts devem estar no mesmo nível. "
-                f"ct1: level={ct1.level}, ct2: level={ct2.level}"
-            )
-
-        if ct1.crypto_params != ct2.crypto_params:
-            raise ValueError(
-                "Ciphertexts devem usar os mesmos parâmetros criptográficos"
-            )
-
-        # Etapa 1: Multiplicação raw (2 componentes → 3 componentes)
-        ct_mult_raw = CKKSCiphertext.raw_multiply_homomorphic(ct1, ct2)
-
-        # Etapa 2: Relinearização (3 componentes → 2 componentes)
-        ct_relin = CKKSCiphertext.relinearize(ct_mult_raw, evaluation_key)
-
-        # Etapa 3: Rescale (level → level-1, escala Δ² → Δ)
-        ct_result = ct_relin.rescale()
-
-        return ct_result
 
     @staticmethod
     def key_switching(
@@ -608,23 +370,15 @@ class CKKSCiphertext:
 
         # Aplicar escalonamento e arredondamento: ⌊(KSK · C₂ · q_ℓ) / (P · q_ℓ)⌋
         # Simplifica para: ⌊(KSK · C₂) / P⌋
-        # Dividir por P e arredondar. Para módulos grandes, evitamos restringir a int64.
-        q_bits = int(q_ell).bit_length()
-        if q_bits <= 62:
-            ksk0_C2_scaled_coeffs = np.round(
-                ksk0_C2.coef.astype(np.float64) / P
-            ).astype(np.int64)
-            ksk1_C2_scaled_coeffs = np.round(
-                ksk1_C2.coef.astype(np.float64) / P
-            ).astype(np.int64)
-        else:
-            # Coeficientes potencialmente muito grandes: mantemos como ints Python
-            ksk0_C2_scaled_coeffs = np.round(
-                ksk0_C2.coef.astype(np.float64) / P
-            ).astype(object)
-            ksk1_C2_scaled_coeffs = np.round(
-                ksk1_C2.coef.astype(np.float64) / P
-            ).astype(object)
+        # Dividir por P e arredondar, armazenando via backend.
+        ksk0_C2_scaled_float = np.round(
+            ksk0_C2.coef.astype(np.float64) / P
+        )
+        ksk1_C2_scaled_float = np.round(
+            ksk1_C2.coef.astype(np.float64) / P
+        )
+        ksk0_C2_scaled_coeffs = cast_array_to_backend(ksk0_C2_scaled_float)
+        ksk1_C2_scaled_coeffs = cast_array_to_backend(ksk1_C2_scaled_float)
 
         # Criar polinômios com coeficientes arredondados
         ksk0_C2_scaled = Polynomial(ksk0_C2_scaled_coeffs)

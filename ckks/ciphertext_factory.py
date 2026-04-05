@@ -13,11 +13,11 @@ from typing import List, Union, Tuple, Dict, Any
 
 try:
     from .constants import CKKSCryptographicParameters
-    from .ckks_ciphertext import CKKSCiphertext
+    from .ckks_ciphertext import CKKSCiphertext, _agent_debug_log
     from .ckks_plaintext import CKKSPlaintext
 except ImportError:
     from constants import CKKSCryptographicParameters
-    from ckks_ciphertext import CKKSCiphertext
+    from ckks_ciphertext import CKKSCiphertext, _agent_debug_log
     from ckks_plaintext import CKKSPlaintext
 
 
@@ -183,6 +183,32 @@ class CKKSCiphertextFactory:
         expected_length: int = None,
     ) -> np.ndarray:
         """Decrypts and decodes a ciphertext in one operation."""
+        # Se for resultado de multiplicação (marcado por debug_mult), registrar stats detalhados
+        try:
+            if isinstance(ciphertext, CKKSCiphertext) and getattr(
+                ciphertext, "debug_mult", None
+            ):
+                coeff_stats = ciphertext.coeff_stats
+                max_coeffs = [
+                    float(comp["max_abs"])
+                    for comp in coeff_stats.get("components", [])
+                ]
+                _agent_debug_log(
+                    "H3",
+                    "ckks_ciphertext_factory.py:decrypt_and_decode:multiply_result",
+                    "Decrypt and decode for multiplication result",
+                    {
+                        "level": int(ciphertext.level),
+                        "scale": float(ciphertext.scale)
+                        if isinstance(ciphertext.scale, (int, float))
+                        else str(ciphertext.scale),
+                        "modulus_bits": int(ciphertext.current_modulus).bit_length(),
+                        "max_coeff_magnitudes": max_coeffs,
+                    },
+                )
+        except Exception:
+            pass
+
         decrypted_poly = self.decrypt(ciphertext, secret_key)
         scale = ciphertext.scale
 

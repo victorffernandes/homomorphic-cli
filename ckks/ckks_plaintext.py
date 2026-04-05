@@ -15,6 +15,7 @@ from numpy.polynomial import Polynomial
 from typing import List, Union
 from .constants import CKKSCryptographicParameters
 from .canonical_embedding import get_fft_tables, fft_special, fft_special_inv
+from .int_backend import cast_array_to_backend, make_int_backend_array
 
 # #region agent log
 def _debug_log(*args, **kwargs) -> None:
@@ -272,7 +273,7 @@ class CKKSPlaintext:
 
         Floor-divide coefficients by 2^bits_down (right shift). No rounding.
         """
-        coeffs = np.array(self.polynomial.coef, dtype=np.int64)
+        coeffs = cast_array_to_backend(np.array(self.polynomial.coef))
         if len(coeffs) < self.crypto_params.POLYNOMIAL_DEGREE:
             coeffs = np.pad(
                 coeffs,
@@ -280,7 +281,7 @@ class CKKSPlaintext:
                 mode="constant",
             )
         coeffs = coeffs >> bits_down
-        scaled_poly = Polynomial(coeffs.astype(np.int64))
+        scaled_poly = Polynomial(coeffs)
         q = self.crypto_params.get_initial_modulus()
         ring_poly_mod = self.crypto_params.get_polynomial_modulus_ring()
         m_mod = self.crypto_params.poly_ring_mod(scaled_poly, ring_poly_mod, q)
@@ -308,7 +309,7 @@ class CKKSPlaintext:
         cnst_scaled = int(round(constant * (1 << logp)))
         q = pt.crypto_params.get_initial_modulus()
         ring_poly_mod = pt.crypto_params.get_polynomial_modulus_ring()
-        coeffs = np.array(pt.polynomial.coef, dtype=np.int64)
+        coeffs = cast_array_to_backend(np.array(pt.polynomial.coef))
         if len(coeffs) < pt.crypto_params.POLYNOMIAL_DEGREE:
             coeffs = np.pad(
                 coeffs,
@@ -316,10 +317,10 @@ class CKKSPlaintext:
                 mode="constant",
             )
         cnst_mod = cnst_scaled % q
-        coeffs = np.array(
-            [(int(c) * cnst_mod) % q for c in coeffs], dtype=np.int64
+        coeffs = make_int_backend_array(
+            [(int(c) * cnst_mod) % q for c in coeffs]
         )
-        m_scaled = Polynomial(coeffs.astype(np.int64))
+        m_scaled = Polynomial(coeffs)
         m_mod = pt.crypto_params.poly_ring_mod(m_scaled, ring_poly_mod, q)
         new_scale = pt.scale * (1 << logp)
         return CKKSPlaintext(m_mod, pt.crypto_params, new_scale)

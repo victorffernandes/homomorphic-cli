@@ -7,6 +7,7 @@ from .bigint_poly_utils import (
     poly_mul_mod as bi_poly_mul_mod,
     generate_uniform_random_poly as bi_generate_uniform_random_poly,
 )
+from .int_backend import make_int_backend_array
 
 
 class CKKSCryptographicParameters:
@@ -204,15 +205,16 @@ class CKKSCryptographicParameters:
         """
         Configuração para multiplicação homomórfica com precisão ~0.01.
 
-        Maior N e cadeia com headroom evitam wraparound; P*qL mantido < 2^63
-        para geração de chaves (int64).
+        Projetada para operar em segurança com backends de inteiros de alta
+        precisão (por exemplo, int128 ou ints Python), sem depender de limites
+        específicos de int64.
 
         Returns:
             CKKSCryptographicParameters: Parâmetros para precisão ~0.01 em multiply
         """
         return cls(
             logN=9,  # N=512 (balanço ruído vs. tempo)
-            logQ=16,  # P=2^32; 2*logQ+total_levels < 63 para int64
+            logQ=16,
             logp=12,
             total_levels=29,  # top q=2^29; após rescale q=2^28 >> 14*2^23
             gaussian_noise_stddev=1.0,  # ruído menor para melhor precisão
@@ -303,10 +305,8 @@ class CKKSCryptographicParameters:
         if sigma_val is None:
             sigma_val = self.GAUSSIAN_NOISE_STDDEV
 
-        coeffs = np.round(np.random.normal(0, sigma_val, size=degree_n)).astype(
-            np.int64
-        )
-        return Polynomial(coeffs)
+        coeffs = np.round(np.random.normal(0, sigma_val, size=degree_n))
+        return Polynomial(make_int_backend_array(coeffs))
 
     def generate_hamming_weight(self, n=None, hamming_weight=None):
         """
@@ -337,8 +337,8 @@ class CKKSCryptographicParameters:
                 f"Peso de Hamming {hamming_weight} não pode ser maior que o grau {n}"
             )
 
-        # Inicializa todos os coeficientes como zero
-        coeffs = np.zeros(n, dtype=np.int64)
+        # Inicializa todos os coeficientes como zero (backend integer representation)
+        coeffs = make_int_backend_array(np.zeros(n, dtype=int))
 
         # Escolhe posições aleatórias para colocar valores não-zero
         positions = np.random.choice(n, size=hamming_weight, replace=False)
@@ -375,11 +375,11 @@ class CKKSCryptographicParameters:
 
         # Vectorized implementation
         rand_vals = np.random.random(degree_n)
-        coeffs = np.zeros(degree_n, dtype=np.int64)
+        coeffs = np.zeros(degree_n, dtype=int)
         coeffs[rand_vals < density / 2] = -1
         coeffs[(rand_vals >= density / 2) & (rand_vals < density)] = 1
 
-        return Polynomial(coeffs)
+        return Polynomial(make_int_backend_array(coeffs))
 
     def generate_uniform_random_poly(self, degree_n=None, q_bound=None):
         """

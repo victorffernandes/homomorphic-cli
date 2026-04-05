@@ -3,6 +3,7 @@ from .ckks_ciphertext import CKKSCiphertext
 from .constants import CKKSCryptographicParameters
 from .ciphertext_factory import CKKSCiphertextFactory
 from .key_factory import CKKSKeyFactory
+from .int_backend import cast_array_to_backend
 
 # Criação da instância global dos parâmetros
 crypto_params = CKKSCryptographicParameters()
@@ -16,7 +17,7 @@ key_factory = CKKSKeyFactory(crypto_params)
 def log_poly(name, poly, q_mod=None):
     """Imprime um resumo de um polinômio para depuração."""
     # Garante que os coeficientes sejam um array numpy para as operações
-    coeffs = np.array(poly.coef, dtype=np.int64)
+    coeffs = cast_array_to_backend(np.array(poly.coef))
     print(f"--- LOG: {name} ---")
     print(f"    Primeiros 8 coefs: {coeffs[:8]}")
     print(f"    Max coef: {np.max(coeffs)}")

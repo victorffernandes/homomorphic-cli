@@ -19,9 +19,8 @@ class TestCKKSPlaintextOperations:
     def setup_method(self):
         """Setup executed before each test.
 
-        Uses custom config: modulus must fit in int64 (q < 2^63) for
-        poly_ring_mod. logN=8, logQ=35, logp=15, total_levels=60 gives
-        N=256, modulus up to 2^60 (fits int64), q > N*scale^2 for multiply.
+        Uses custom config chosen so that the initial modulus and scale
+        are in a comfortable range for precise plaintext operations.
         """
         self.crypto_params = CKKSCryptographicParameters(
             logN=8, logQ=35, logp=15, total_levels=60

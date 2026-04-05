@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 from numpy.polynomial import Polynomial
+from .int_backend import make_int_backend_array, rand_int_mod_backend
 
 
 def mod_centered(value: Any, modulus: int):
@@ -36,11 +37,8 @@ def poly_coeffs_mod_q(p_numpy: Polynomial, q_coeff: int) -> Polynomial:
 
     coeffs = mod_centered(coeffs, int(q_coeff))
 
-    q_bits = int(q_coeff).bit_length()
-    if q_bits <= 62:
-        return Polynomial(np.array(coeffs, dtype=np.int64))
-
-    return Polynomial(np.array([int(c) for c in coeffs], dtype=object))
+    # Always return using the backend integer representation (int128 when available).
+    return Polynomial(make_int_backend_array(coeffs))
 
 
 def poly_ring_mod(p_numpy, ring_poly_mod: Polynomial, q_coeff: int) -> Polynomial:
@@ -67,10 +65,8 @@ def poly_ring_mod(p_numpy, ring_poly_mod: Polynomial, q_coeff: int) -> Polynomia
         dtype=object,
     )
 
-    if q_int.bit_length() <= 62:
-        coeff_array = np.array(result_coeffs, dtype=np.int64)
-    else:
-        coeff_array = np.array([int(c) for c in result_coeffs], dtype=object)
+    # Use backend representation for coefficients (int128 when available).
+    coeff_array = make_int_backend_array(result_coeffs)
 
     result_poly = Polynomial(coeff_array)
     return poly_coeffs_mod_q(result_poly, q_coeff)
@@ -95,12 +91,6 @@ def generate_uniform_random_poly(degree_n: int, q_bound: int) -> Polynomial:
     if q_int <= 0:
         raise ValueError(f"q_bound deve ser positivo, recebido: {q_bound}")
 
-    if q_int <= np.iinfo(np.int64).max:
-        coeffs = np.random.randint(0, q_int, size=degree_n, dtype=np.int64)
-        return Polynomial(coeffs)
-
-    k = max(1, int(math.ceil(math.log2(q_int))))
-    coeffs_list = [(random.getrandbits(k) % q_int) for _ in range(degree_n)]
-    coeffs = np.array(coeffs_list, dtype=object)
+    coeffs = rand_int_mod_backend(degree_n, q_int)
     return Polynomial(coeffs)
 

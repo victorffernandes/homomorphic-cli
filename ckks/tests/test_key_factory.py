@@ -389,7 +389,8 @@ class TestCKKSKeyFactory:
 
             except Exception as e:
                 # Alguns valores de P podem causar overflow, isso é esperado
-                assert "overflow" in str(e).lower() or "int64" in str(e).lower()
+                msg = str(e).lower()
+                assert "overflow" in msg
 
     def test_evaluation_key_in_full_keyset(self):
         """Testa se a EVK é incluída no keyset completo."""
