@@ -37,7 +37,6 @@ def householder_qr(a: Sequence[Sequence[float]]) -> Tuple[Matrix, Matrix]:
 			continue
 		v = [vi / norm_v for vi in v]
 
-		print("r: ",r) 
 		# Update R: R[k:, k:] -= 2 v (v^T R[k:, k:])
 		for j in range(k, n):
 			dot = sum(v[i] * r[k + i][j] for i in range(len(v)))
@@ -68,22 +67,24 @@ def sub(a: Sequence[Sequence[float]], b: Sequence[Sequence[float]]) -> Matrix:
 
 
 if __name__ == "__main__":
+	import time
+
 	A = [
 		[12.0, -51.0, 4.0],
 		[6.0, 167.0, -68.0],
 		[-4.0, 24.0, -41.0],
 	]
 
+	t0 = time.perf_counter()
 	Q, R = householder_qr(A)
+	elapsed = time.perf_counter() - t0
+
 	A_recon = matmul(Q, R)
+	err = fro_norm(sub(A, A_recon))
+	norm_A = fro_norm(A)
+	rel_err = err / norm_A if norm_A > 0 else 0.0
 
-	print("Q:")
-	for row in Q:
-		print([round(v, 6) for v in row])
-
-	print("\nR:")
-	for row in R:
-		print([round(v, 6) for v in row])
-
-	print("\n||A - QR||_F:", round(fro_norm(sub(A, A_recon)), 12))
+	print(f"3x3 plaintext: {elapsed:.4f}s")
+	print(f"  ||A - QR||_F / ||A||_F = {rel_err:.2e}")
+	print(f"  PASS: {rel_err < 1e-10}")
 

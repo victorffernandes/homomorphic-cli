@@ -9,7 +9,6 @@ Chebyshev domains derived per-step from plaintext simulation.
 from __future__ import annotations
 
 import math
-import time
 from typing import Tuple
 
 from openfhe import *
@@ -49,7 +48,6 @@ def setup_crypto_context(mult_depth: int, N: int = 8192) -> Tuple:
         + [-3]
     )
     cc.EvalRotateKeyGen(keys.secretKey, rot_indices)
-    print(f"Setup finished: mult_depth={mult_depth}, N={N}, rot_keys={len(rot_indices)}")
 
     return cc, keys
 
@@ -165,7 +163,6 @@ def householder_qr_cipher_col(
     steps = min(m, n)
     for k in range(steps):
         ns, vt = step_norms[k]
-        t0 = time.perf_counter()
         householder_step_fhe_col(
             cc, keys, R_cts, Q_cols, k, m, n,
             norm_sq_lo = ns / margin,
@@ -175,7 +172,6 @@ def householder_qr_cipher_col(
             D_sqrt     = D_sqrt,
             D_inv      = D_inv,
         )
-        print(f"  step k={k:2d}/{steps - 1}: {time.perf_counter() - t0:.1f}s")
 
     Q = decrypt_matrix_cols(cc, keys, Q_cols, m)
     R = decrypt_matrix_from_cols(cc, keys, R_cts, m, n)
@@ -183,6 +179,8 @@ def householder_qr_cipher_col(
 
 
 def main():
+    import time
+
     D_sqrt, D_inv = 64, 64
 
     A_main = random_matrix(150, 4, seed=42)
@@ -192,8 +190,9 @@ def main():
 
     cc, keys = setup_crypto_context(depth_main, N=8192)
 
+    t0 = time.perf_counter()
     Q_enc, R_enc = householder_qr_cipher_col(cc, keys, A_main, D_sqrt=D_sqrt, D_inv=D_inv)
-
+    print(f"150x4 col-packed: {time.perf_counter() - t0:.1f}s")
     verify_fhe(A_main, Q_enc, R_enc, tol=1e-4)
 
     smoke = [
@@ -206,8 +205,10 @@ def main():
         d_s = depth_for_size(m_s, n_s, D_sqrt, D_inv)
 
         cc_s, keys_s = setup_crypto_context(d_s, N=8192)
-        Q_s, R_s = householder_qr_cipher_col(cc_s, keys_s, A_s, D_sqrt=D_sqrt, D_inv=D_inv)
 
+        t0 = time.perf_counter()
+        Q_s, R_s = householder_qr_cipher_col(cc_s, keys_s, A_s, D_sqrt=D_sqrt, D_inv=D_inv)
+        print(f"{label} col-packed: {time.perf_counter() - t0:.1f}s")
         verify_fhe(A_s, Q_s, R_s, tol=tol_s)
 
 

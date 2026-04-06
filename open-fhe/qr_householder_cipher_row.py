@@ -252,7 +252,6 @@ def householder_qr_cipher(
     steps = min(m, n)
     for k in range(steps):
         ns, vt = step_norms[k]
-        t0 = time.perf_counter()
         householder_step_fhe(
             cc, keys, R_cts, Q_cols, k, m, n,
             norm_sq_lo = ns / margin,
@@ -262,7 +261,6 @@ def householder_qr_cipher(
             D_sqrt     = D_sqrt,
             D_inv      = D_inv,
         )
-        print(f"  step k={k:2d}/{steps - 1}: {time.perf_counter() - t0:.1f}s")
 
     Q = decrypt_matrix_cols(cc, keys, Q_cols, m)
     R = decrypt_matrix_rows(cc, keys, R_cts, n)
@@ -313,11 +311,9 @@ def main():
 
     cc, keys = setup_crypto_context(depth_main, N=8192)
 
+    t0 = time.perf_counter()
     Q_enc, R_enc = householder_qr_cipher(cc, keys, A_main, D_sqrt=D_sqrt, D_inv=D_inv)
-
-    print("Q:", Q_enc)
-    print("R:", R_enc)
-
+    print(f"150x4 row-packed: {time.perf_counter() - t0:.1f}s")
     verify_fhe(A_main, Q_enc, R_enc, tol=1e-4)
 
     smoke = [
@@ -330,11 +326,10 @@ def main():
         d_s = depth_for_size(m_s, n_s, D_sqrt, D_inv)
 
         cc_s, keys_s = setup_crypto_context(d_s, N=8192)
+
+        t0 = time.perf_counter()
         Q_s, R_s = householder_qr_cipher(cc_s, keys_s, A_s, D_sqrt=D_sqrt, D_inv=D_inv)
-
-        print("Q:", Q_s)
-        print("R:", R_s)
-
+        print(f"{label} row-packed: {time.perf_counter() - t0:.1f}s")
         verify_fhe(A_s, Q_s, R_s, tol=tol_s)
 
 
