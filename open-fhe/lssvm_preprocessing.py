@@ -1,0 +1,145 @@
+"""LSSVM preprocessing: build the symmetric block matrix for Least Squares SVM.
+
+Given dataset X, labels y, and regularisation parameter gamma, assembles:
+
+    H = [0       1_N^T          ]   (N+1 x N+1)
+        [1_N   Omega + (1/g)*I_N]
+
+    rhs = [0, y_1, ..., y_N]^T
+
+where Omega_ij = y_i * K(x_i, x_j) * y_j  (kernel trick with linear kernel).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from sklearn.datasets import load_iris
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+
+def linear_kernel(X: np.ndarray) -> np.ndarray:
+    """K_ij = x_i . x_j"""
+    return X @ X.T
+
+
+def build_omega(K: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Omega_ij = y_i * K_ij * y_j"""
+    y_col = y.reshape(-1, 1)
+    return y_col * K * y_col.T
+
+
+def build_lssvm_matrix(
+    X: np.ndarray, y: np.ndarray, gamma: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Assemble the (N+1)x(N+1) block matrix H and the rhs vector.
+
+    Parameters
+    ----------
+    X : (N, d) feature matrix
+    y : (N,)   labels in {-1, +1}
+    gamma : regularisation parameter (> 0)
+
+    Returns
+    -------
+    H   : (N+1, N+1) symmetric block matrix
+    rhs : (N+1,)     right-hand side vector [0, y_1, ..., y_N]
+    """
+    if gamma <= 0:
+        raise ValueError(f"gamma must be > 0, got {gamma}")
+
+    N = len(y)
+    K = linear_kernel(X)
+    Omega = build_omega(K, y)
+
+    H = np.zeros((N + 1, N + 1))
+    H[0, 1:] = 1.0
+    H[1:, 0] = 1.0
+    H[1:, 1:] = Omega + (1.0 / gamma) * np.eye(N)
+
+    rhs = np.zeros(N + 1)
+    rhs[1:] = y
+
+    return H, rhs
+
+
+def prepare_iris_binary(
+    class_idx: int | None = None,
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]]:
+    """Load Iris, split, scale, and return OvR binary sub-problems.
+
+    Parameters
+    ----------
+    class_idx : If given, return only that class-vs-rest problem.
+                If None, return all three OvR problems.
+    test_size : Fraction of data held out for testing.
+    random_state : Seed for reproducible splits.
+
+    Returns
+    -------
+    List of (X_train, X_test, y_train, y_test, class_name) tuples.
+    y values are +1 (target class) or -1 (rest).
+    """
+    iris = load_iris()
+    X_all, y_all = iris.data, iris.target
+    class_names = iris.target_names
+
+    X_train, X_test, y_train_raw, y_test_raw = train_test_split(
+        X_all, y_all, test_size=test_size, stratify=y_all, random_state=random_state
+    )
+
+    scaler = StandardScaler().fit(X_train)
+    X_train = scaler.transform(X_train)
+    X_test = scaler.transform(X_test)
+
+    indices = [class_idx] if class_idx is not None else range(len(class_names))
+
+    results = []
+    for c in indices:
+        y_tr = np.where(y_train_raw == c, 1.0, -1.0)
+        y_te = np.where(y_test_raw == c, 1.0, -1.0)
+        results.append((X_train, X_test, y_tr, y_te, class_names[c]))
+
+    return results
+
+
+def prepare_dataset(
+    X: np.ndarray, y: np.ndarray, gamma: float
+) -> list[tuple[list, list, dict]]:
+    """Build LSSVM matrices for binary or multi-class (OvR) data.
+
+    Parameters
+    ----------
+    X : (N, d) feature matrix (already scaled)
+    y : (N,)   integer class labels
+
+    Returns
+    -------
+    List of (H_list, rhs_list, meta) where H_list/rhs_list are plain
+    Python lists (compatible with FHE functions) and meta is a dict
+    with 'y_binary' and 'class_label'.
+    """
+    classes = np.unique(y)
+
+    if len(classes) == 2:
+        y_binary = np.where(y == classes[1], 1.0, -1.0)
+        H, rhs = build_lssvm_matrix(X, y_binary, gamma)
+        meta = {"y_binary": y_binary, "class_label": f"{classes[1]} vs {classes[0]}"}
+        return [(H.tolist(), rhs.tolist(), meta)]
+
+    problems = []
+    for c in classes:
+        y_binary = np.where(y == c, 1.0, -1.0)
+        H, rhs = build_lssvm_matrix(X, y_binary, gamma)
+        meta = {"y_binary": y_binary, "class_label": f"class {c} vs rest"}
+        problems.append((H.tolist(), rhs.tolist(), meta))
+    return problems
+
+
+if __name__ == "__main__":
+    splits = prepare_iris_binary()
+    for X_tr, X_te, y_tr, y_te, name in splits:
+        H, rhs = build_lssvm_matrix(X_tr, y_tr, gamma=1.0)
+        print(f"{name} vs rest:  H shape {H.shape},  symmetric: {np.allclose(H, H.T)},  cond: {np.linalg.cond(H):.1f}")

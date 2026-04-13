@@ -162,9 +162,7 @@ def householder_qr_cipher(cc, keys, A: List[List[float]]):
         householder_step(cc, keys, R_cts, Q_cts, k, m, n)
         print(f"  step k={k}: {time.perf_counter() - t0:.3f}s")
 
-    Q = decrypt_matrix(cc, keys, Q_cts, m, m)
-    R = decrypt_matrix(cc, keys, R_cts, m, n)
-    return Q, R
+    return Q_cts, R_cts
 
 
 # ---------------------------------------------------------------------------

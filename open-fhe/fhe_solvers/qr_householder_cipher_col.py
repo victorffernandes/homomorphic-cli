@@ -13,11 +13,17 @@ from typing import Tuple
 
 from openfhe import *
 
-from qr_householder_cipher_row import (
-    he_sqrt, he_inv, safe_rotate, replicate_slot_0,
-    encrypt_identity_cols, decrypt_matrix_cols, decrypt_vector,
-    _simulate_norms, _cheby_depth, depth_for_size,
-    transpose, verify_fhe, random_matrix,
+from .utils import (
+    encrypt_matrix_cols,
+    encrypt_identity_cols,
+    safe_rotate,
+    sum_slots,
+    he_sqrt,
+    he_inv,
+    safe_rotate,
+    replicate_slot_0,
+    sum_slots,
+    simulate_norms
 )
 
 
@@ -42,53 +48,28 @@ def setup_crypto_context(mult_depth: int, N: int = 8192) -> Tuple:
     cc.EvalMultKeyGen(keys.secretKey)
 
     log_slots = int(math.ceil(math.log2(N // 2)))
-    rot_indices = (
-        list(range(1, 151))
-        + [-(1 << i) for i in range(log_slots)]
-        + [-3]
-    )
+    rot_indices = list(range(1, 151)) + [-(1 << i) for i in range(log_slots)] + [-3]
     cc.EvalRotateKeyGen(keys.secretKey, rot_indices)
 
     return cc, keys
 
-
-def sum_slots(cc, ct, n: int):
-    """Tree-based sum of slots 0..n-1 into slot 0. Depth cost: 0 (additions only). Caller must mask with e_0 after."""
-    result = ct
-    step = 1
-    while step < n:
-        result = cc.EvalAdd(result, cc.EvalRotate(result, step))
-        step *= 2
-    return result
-
-
-def encrypt_matrix_cols(cc, keys, A: list) -> list:
-    """Encrypt m x n matrix A as n column ciphertexts: R_cts[j] = [A[0,j], ..., A[m-1,j], 0, ...]."""
-    m, n = len(A), len(A[0])
-    slots = cc.GetRingDimension() // 2
-    R_cts = []
-    for j in range(n):
-        col = [A[i][j] for i in range(m)] + [0.0] * (slots - m)
-        R_cts.append(cc.Encrypt(keys.publicKey, cc.MakeCKKSPackedPlaintext(col)))
-    return R_cts
-
-
-def decrypt_matrix_from_cols(cc, keys, R_cts: list, m: int, n: int) -> list:
-    """Decrypt n column ciphertexts back to m x n row-major matrix."""
-    cols = [decrypt_vector(cc, keys, ct, m) for ct in R_cts]
-    return [[cols[j][i] for j in range(n)] for i in range(m)]
-
-
 def householder_step_fhe_col(
-    cc, keys,
-    R_cts: list, Q_cols: list,
-    k: int, m: int, n: int,
-    norm_sq_lo: float, norm_sq_hi: float,
-    vtv_lo: float, vtv_hi: float,
-    D_sqrt: int = 16, D_inv: int = 16,
+    cc,
+    keys,
+    R_cts: list,
+    Q_cols: list,
+    k: int,
+    m: int,
+    n: int,
+    norm_sq_lo: float,
+    norm_sq_hi: float,
+    vtv_lo: float,
+    vtv_hi: float,
+    D_sqrt: int = 16,
+    D_inv: int = 16,
 ):
     """One Householder reflection at pivot k with column-packed R (sign=+1, zero decryptions). Updates R_cts and Q_cols in-place."""
-    slots  = cc.GetRingDimension() // 2
+    slots = cc.GetRingDimension() // 2
     length = m - k
 
     mask_k_vec = [0.0] * slots
@@ -144,9 +125,9 @@ def householder_step_fhe_col(
         update = cc.EvalMult(cc.EvalMult(tau_bc, v_bc[i]), d_ct)
         Q_cols[k + i] = cc.EvalSub(Q_cols[k + i], update)
 
-
-def householder_qr_cipher_col(
-    cc, keys,
+def solver(
+    cc,
+    keys,
     A: list,
     D_sqrt: int = 64,
     D_inv: int = 64,
@@ -154,63 +135,29 @@ def householder_qr_cipher_col(
     """Fully homomorphic Householder QR with column-packed R. Returns decrypted (Q, R). Chebyshev bounds from plaintext simulation with margin=10."""
     m, n = len(A), len(A[0])
 
-    step_norms = _simulate_norms(A)
-    margin     = 10.0
+    step_norms = simulate_norms(A)
+    margin = 10.0
 
-    R_cts  = encrypt_matrix_cols(cc, keys, A)
+    R_cts = encrypt_matrix_cols(cc, keys, A)
     Q_cols = encrypt_identity_cols(cc, keys, m)
 
     steps = min(m, n)
     for k in range(steps):
         ns, vt = step_norms[k]
         householder_step_fhe_col(
-            cc, keys, R_cts, Q_cols, k, m, n,
-            norm_sq_lo = ns / margin,
-            norm_sq_hi = ns * margin,
-            vtv_lo     = vt / margin,
-            vtv_hi     = vt * margin,
-            D_sqrt     = D_sqrt,
-            D_inv      = D_inv,
+            cc,
+            keys,
+            R_cts,
+            Q_cols,
+            k,
+            m,
+            n,
+            norm_sq_lo=ns / margin,
+            norm_sq_hi=ns * margin,
+            vtv_lo=vt / margin,
+            vtv_hi=vt * margin,
+            D_sqrt=D_sqrt,
+            D_inv=D_inv,
         )
 
-    Q = decrypt_matrix_cols(cc, keys, Q_cols, m)
-    R = decrypt_matrix_from_cols(cc, keys, R_cts, m, n)
-    return Q, R
-
-
-def main():
-    import time
-
-    D_sqrt, D_inv = 64, 64
-
-    A_main = random_matrix(150, 4, seed=42)
-    m_main, n_main = 150, 4
-
-    depth_main = depth_for_size(m_main, n_main, D_sqrt, D_inv)
-
-    cc, keys = setup_crypto_context(depth_main, N=8192)
-
-    t0 = time.perf_counter()
-    Q_enc, R_enc = householder_qr_cipher_col(cc, keys, A_main, D_sqrt=D_sqrt, D_inv=D_inv)
-    print(f"150x4 col-packed: {time.perf_counter() - t0:.1f}s")
-    verify_fhe(A_main, Q_enc, R_enc, tol=1e-4)
-
-    smoke = [
-        ("2x2",  [[3.0, 1.0], [4.0, 1.5]], 1e-2),
-        ("4x2",  random_matrix(4, 2, seed=7), 1e-2),
-    ]
-
-    for label, A_s, tol_s in smoke:
-        m_s, n_s = len(A_s), len(A_s[0])
-        d_s = depth_for_size(m_s, n_s, D_sqrt, D_inv)
-
-        cc_s, keys_s = setup_crypto_context(d_s, N=8192)
-
-        t0 = time.perf_counter()
-        Q_s, R_s = householder_qr_cipher_col(cc_s, keys_s, A_s, D_sqrt=D_sqrt, D_inv=D_inv)
-        print(f"{label} col-packed: {time.perf_counter() - t0:.1f}s")
-        verify_fhe(A_s, Q_s, R_s, tol=tol_s)
-
-
-if __name__ == "__main__":
-    main()
+    return Q_cols, R_cts
