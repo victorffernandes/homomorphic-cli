@@ -2,10 +2,10 @@
 
 Pipeline:
   1. Subsample Iris to keep H small enough for FHE.
-  2. Encrypt H, run Householder QR in CKKS → encrypted Q, R.
-  3. Compute c = Q^T rhs in FHE (Q encrypted, rhs plaintext).
-  4. Back-substitute Rx = c fully in FHE → decrypt only the final solution.
-  5. Predict on the full test set and compare with the plaintext solver.
+  2. Apply feature map for the selected kernel (polynomial kernels expand features).
+  3. Call solver: encrypt H, run Householder QR + Q^T@rhs + back-sub + primal weights → (b_ct, w_ct).
+  4. Predict on the full test set using encrypted primal weights (no training data needed).
+  5. Serialize model (crypto context, keys, b_ct, w_ct, mode) to disk.
 """
 
 from __future__ import annotations
@@ -17,93 +17,77 @@ import numpy as np
 
 from fhe_solvers.utils import sum_slots, safe_rotate
 from fhe_solvers.utils import decrypt_vector, depth_for_size
-from fhe_solvers.utils import he_matmul_T_vec, he_back_substitute
-from lssvm_preprocessing import prepare_iris_binary, build_lssvm_matrix
+from lssvm_preprocessing import (
+    prepare_iris_binary, build_lssvm_matrix,
+    linear_kernel, polynomial_kernel, homogeneous_poly_kernel,
+    poly_feature_map, homogeneous_poly_feature_map,
+)
 from lssvm_plain import predict_lssvm
+from metrics import print_class_report
 
 solver_name = sys.argv[1] if len(sys.argv) > 1 else "qr_householder_cipher_row"
 solv = importlib.import_module(f"fhe_solvers.{solver_name}")
 
 # ── configuration ──────────────────────────────────────────────────
-N_PER_CLASS    = 10    # samples per binary class → H is (2*N+1) x (2*N+1)
+N_PER_CLASS    = 2    # samples per binary class → H is (2*N+1) x (2*N+1)
 D_SQRT         = 2    # Chebyshev degree for sqrt (QR step)
 D_INV          = 2    # Chebyshev degree for 1/t (QR step — vtv reciprocal)
-D_INV_BACKSUB  = 8    # Chebyshev degree for 1/t in back-sub (tight bounds → lower degree sufficient)
+D_INV_BACKSUB  = 8    # Chebyshev degree for 1/t in back-sub
 DEPTH_SAFETY   = 1.15 # calibrated FLEXIBLEAUTO safety factor
 DEPTH_OVERRIDE = None # set int to bypass estimator during experimentation
+N_OVERRIDE     = None # set int to force ring dimension (None = auto-scale from depth)
 GAMMA          = 1.0  # regularisation
 
+# ── Kernel selection per OvR class ────────────────────────────────
+# Available options:
+#   "linear"     → linear kernel,                   no feature expansion
+#   "poly"       → polynomial kernel (x·y + c)^d,   feature dim expands to C(d+deg, deg)
+#   "homo_poly"  → homogeneous polynomial (x·y)^d,  feature dim expands to C(d+deg-1, deg)
+#
+# Change the value for each class index to switch kernels.
+CLASS_KERNEL_SELECTION = {
+    0: "linear",
+    1: "linear",
+    2: "linear",
+}
 
-def solve_lssvm_fhe(cc, keys, H: list, rhs: list,
-                    D_sqrt: int, D_inv: int, D_inv_backsub: int):
-    """Solve H @ x = rhs fully in FHE: QR + encrypted Q^T@rhs + encrypted back-sub with encrypted pivots.
+_KERNEL_REGISTRY = {
+    "linear":    (linear_kernel,             None,                         "primal:linear"),
+    "poly":      (polynomial_kernel,         poly_feature_map,             "primal:poly:degree=2:c=1.0"),
+    "homo_poly": (homogeneous_poly_kernel,   homogeneous_poly_feature_map, "primal:homo_poly:degree=2"),
+}
 
-    All stages use fully homomorphic operations:
-      - QR: Householder reflections with encrypted norm and reciprocal (Chebyshev √ and 1/t).
-      - Q^T@rhs: encrypted Q × plaintext rhs, sum of slots.
-      - Back-substitute: encrypted pivot extraction + Chebyshev reciprocal, no plaintext decryption.
-
-    Returns (x_ct, n) where x_ct is the encrypted solution [b, alpha_0, ..., alpha_{n-1}].
-    """
-    m, n = len(H), len(H[0])
-
-    t0 = time.perf_counter()
-    Q_cols, R_cts, diag_bounds = solv.solver(
-        cc, keys, H, D_sqrt=D_sqrt, D_inv=D_inv,
-    )
-    print(f"    QR factorisation: {time.perf_counter() - t0:.1f}s")
-
-    t1 = time.perf_counter()
-    c_ct = he_matmul_T_vec(cc, Q_cols, rhs, m, n)
-    print(f"    Q^T @ rhs (FHE): {time.perf_counter() - t1:.4f}s")
-
-    t2 = time.perf_counter()
-    x_ct = he_back_substitute(cc, keys, R_cts, c_ct, n,
-                              diag_bounds=diag_bounds, D_inv=D_inv_backsub)
-    print(f"    Back-sub (FHE, encrypted pivots): {time.perf_counter() - t2:.1f}s")
-
-    return x_ct, n
+CLASS_KERNELS = {
+    idx: (name,) + _KERNEL_REGISTRY[name]
+    for idx, name in CLASS_KERNEL_SELECTION.items()
+}
 
 
-def predict_lssvm_cipher(cc, x_ct, X_test: np.ndarray, X_train: np.ndarray,
-                         y_train: np.ndarray, n: int):
-    """Predict using encrypted LSSVM weights and plaintext input.
+def predict_primal_cipher(cc, b_ct, w_ct, X_test: np.ndarray):
+    """Score test samples using encrypted primal weights.
 
-    x_ct:    encrypted solution [b, alpha_0, ..., alpha_{N-1}] in slots 0..n-1.
-    X_test:  plaintext test data (n_test, d).
-    X_train: plaintext training data (n_train, d).
-    y_train: plaintext labels (n_train,).
-    n:       number of elements in the solution vector (1 + n_train).
+    b_ct:   encrypted bias scalar (slot 0).
+    w_ct:   encrypted primal weight vector (slots 0..d-1).
+    X_test: plaintext test data (n_test, d) — pass phi(X_test) for non-linear kernels.
 
-    For each test sample j the score is:
-        score_j = b + sum_i alpha_i * y_i * (x_test_j . x_train_i)
+    For each test sample j:
+        score_j = b + w · x_test_j
 
-    This is computed as an inner product of x_ct with a plaintext vector
-    [1, K_{j,0}*y_0, K_{j,1}*y_1, ...] followed by a slot sum.
-
-    Returns an encrypted ciphertext with score_j in slot j.
+    Returns scores_ct with score_j in slot j.
     """
     slots = cc.GetRingDimension() // 2
-    n_test = len(X_test)
-    n_train = len(X_train)
-
-    K = X_test @ X_train.T  # (n_test, n_train)
-
-    e0_vec = [0.0] * slots
-    e0_vec[0] = 1.0
-    e0_ptxt = cc.MakeCKKSPackedPlaintext(e0_vec)
+    n_test, d = X_test.shape
+    e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
 
     scores_ct = None
     for j in range(n_test):
-        pv = [0.0] * slots
-        pv[0] = 1.0  # multiplied by b
-        for i in range(n_train):
-            pv[i + 1] = float(K[j, i] * y_train[i])
-        ptxt = cc.MakeCKKSPackedPlaintext(pv)
+        xj = list(X_test[j]) + [0.0] * (slots - d)
+        xj_ptxt = cc.MakeCKKSPackedPlaintext(xj)
 
-        prod = cc.EvalMult(x_ct, ptxt)
-        score = sum_slots(cc, prod, n)
-        score = cc.EvalMult(score, e0_ptxt)
+        dot = cc.EvalMult(w_ct, xj_ptxt)       # w · x_test_j  (depth +1)
+        score = sum_slots(cc, dot, d)           # sum to slot 0 (depth +0)
+        score = cc.EvalAdd(score, b_ct)         # + b           (depth +0)
+        score = cc.EvalMult(score, e0_ptxt)     # mask slot 0   (depth +1)
 
         if j != 0:
             score = safe_rotate(cc, score, -j)
@@ -139,93 +123,114 @@ def main():
     splits = prepare_iris_binary()
     classifiers = []
 
-    # All sub-problems have the same H size → set up context once
-    n = 2 * N_PER_CLASS + 1
+    # All sub-problems have the same raw H size before feature expansion
+    n_raw = 2 * N_PER_CLASS + 1
     depth = depth_for_size(
-        n,
-        n,
-        D_SQRT,
-        D_INV,
-        D_INV_BACKSUB,
+        n_raw, n_raw, D_SQRT, D_INV, D_INV_BACKSUB,
         safety_factor=DEPTH_SAFETY,
         depth_override=DEPTH_OVERRIDE,
     )
-    n_test = len(splits[0][1]) if splits else n
+    n_test = len(splits[0][1]) if splits else n_raw
+
+    # Compute max feature dimension across all kernels (needed for rotation key generation)
+    sample_X = splits[0][0][:1]  # one sample for feature map sizing
+    max_feat_dim = n_raw  # fallback
+    for _, _, feature_map_fn, _ in CLASS_KERNELS.values():
+        if feature_map_fn is not None:
+            d = feature_map_fn(sample_X).shape[1]
+        else:
+            d = sample_X.shape[1]
+        max_feat_dim = max(max_feat_dim, d)
+
     print(f"=== LSSVM FHE Solver (Iris OvR) ===")
-    print(f"Gamma={GAMMA}  N_per_class={N_PER_CLASS}  H size={n}x{n}  depth={depth}")
-    print(f"Chebyshev degrees: sqrt={D_SQRT}, inv_qr={D_INV}, inv_backsub={D_INV_BACKSUB}\n")
+    print(f"Gamma={GAMMA}  N_per_class={N_PER_CLASS}  H size={n_raw}x{n_raw}  depth={depth}")
+    print(f"Chebyshev degrees: sqrt={D_SQRT}, inv_qr={D_INV}, inv_backsub={D_INV_BACKSUB}")
+    print(f"Max feature dim (after kernel map): {max_feat_dim}\n")
 
     print("Setting up crypto context ...")
     t_ctx = time.perf_counter()
-    if solver_name == "qr_householder_cipher_row":
-        cc, keys = solv.setup_crypto_context(depth, matrix_size=n, n_test=n_test)
-    else:
-        cc, keys = solv.setup_crypto_context(depth)
+    cc, keys = solv.setup_crypto_context(depth, matrix_size=n_raw, n_test=n_test,
+                                         feature_dim=max_feat_dim, N=N_OVERRIDE)
     ring_dim = cc.GetRingDimension()
     print(f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (N={ring_dim}, slots={ring_dim//2})\n")
 
     for class_idx, (X_tr, X_te, y_tr, y_te, name) in enumerate(splits):
-        print(f"--- Class {class_idx} ({name} vs rest) ---")
+        kernel_name, _, feature_map, mode_str = CLASS_KERNELS.get(
+            class_idx, ("linear", linear_kernel, None, "primal:linear")
+        )
+        print(f"--- Class {class_idx} ({name} vs rest) [kernel={kernel_name}] ---")
 
         t_sub = time.perf_counter()
         X_sub, y_sub = subsample_for_fhe(X_tr, y_tr, N_PER_CLASS)
         print(f"  Subsampled {len(y_sub)} points in {time.perf_counter() - t_sub:.3f}s")
 
+        # Apply feature map if needed (polynomial kernels expand to higher-dim space)
+        if feature_map is not None:
+            X_sub_feat = feature_map(X_sub)
+            X_te_feat  = feature_map(X_te)
+        else:
+            X_sub_feat = X_sub
+            X_te_feat  = X_te
+
         t_mat = time.perf_counter()
-        H_np, rhs_np = build_lssvm_matrix(X_sub, y_sub, GAMMA)
+        # Build H using linear kernel on mapped features (equivalent to kernel on raw)
+        H_np, rhs_np = build_lssvm_matrix(X_sub_feat, y_sub, GAMMA)
+        n = H_np.shape[0]
         print(f"  Built H ({H_np.shape[0]}x{H_np.shape[1]}), cond={np.linalg.cond(H_np):.1f} in {time.perf_counter() - t_mat:.3f}s")
         H_list = H_np.tolist()
         rhs_list = rhs_np.tolist()
 
-        # ── FHE solve ──
+        # ── FHE solve + primal weight computation ──
         print(f"  Starting FHE QR solve ({n}x{n}, depth={depth}) ...")
         t0 = time.perf_counter()
-        x_ct, n_sol = solve_lssvm_fhe(cc, keys, H_list, rhs_list,
-                                      D_SQRT, D_INV, D_INV_BACKSUB)
+        b_ct, w_ct, _ = solv.solver(
+            cc, keys, H_list, rhs_list, X_sub_feat, y_sub,
+            D_sqrt=D_SQRT, D_inv=D_INV, D_inv_backsub=D_INV_BACKSUB,
+        )
         elapsed = time.perf_counter() - t0
-        print(f"  FHE QR solve: {elapsed:.1f}s")
+        print(f"  FHE QR solve + primal weights: {elapsed:.1f}s")
 
-        # Decrypt solution
-        solution = decrypt_vector(cc, keys, x_ct, n_sol)
-        b_fhe = solution[0]
-        alpha_fhe = np.array(solution[1:])
-
-        preds_fhe, scores_fhe = predict_lssvm(X_te, X_sub, alpha_fhe, y_sub, b_fhe)
-        acc_fhe = np.mean(preds_fhe == y_te) * 100
-
-        # ── plaintext reference on same subsample ──
+        # ── plaintext reference — same subsample ──
         sol_plain = np.linalg.solve(H_np, rhs_np)
         b_plain = sol_plain[0]
         alpha_plain = sol_plain[1:]
-        preds_plain, scores_plain = predict_lssvm(X_te, X_sub, alpha_plain, y_sub, b_plain)
-        acc_plain = np.mean(preds_plain == y_te) * 100
+        w_plain_sub = alpha_plain @ (y_sub[:, None] * X_sub_feat)
+        preds_plain, _ = predict_lssvm(X_te_feat, X_sub_feat, alpha_plain, y_sub, b_plain)
 
-        # ── cipher prediction ──
+        # ── plaintext reference — full training set ──
+        X_tr_feat = feature_map(X_tr) if feature_map is not None else X_tr
+        H_full_np, rhs_full_np = build_lssvm_matrix(X_tr_feat, y_tr, GAMMA)
+        sol_full = np.linalg.solve(H_full_np, rhs_full_np)
+        alpha_full = sol_full[1:]
+        w_plain_full = alpha_full @ (y_tr[:, None] * X_tr_feat)
+
+        # ── cipher prediction (primal, no training data needed) ──
         t_cp = time.perf_counter()
-        scores_cipher_ct = predict_lssvm_cipher(cc, x_ct, X_te, X_sub, y_sub, n_sol)
-        print(f"  Cipher predict: {time.perf_counter() - t_cp:.4f}s")
-        scores_cipher = np.array(decrypt_vector(cc, keys, scores_cipher_ct, len(X_te)))
+        scores_cipher_ct = predict_primal_cipher(cc, b_ct, w_ct, X_te_feat)
+        print(f"  Cipher predict (primal): {time.perf_counter() - t_cp:.4f}s")
+        scores_cipher = np.array(decrypt_vector(cc, keys, scores_cipher_ct, len(X_te_feat)))
         preds_cipher = np.sign(scores_cipher)
         preds_cipher[preds_cipher == 0] = 1.0
 
-        score_err = np.linalg.norm(scores_cipher - scores_plain) / max(np.linalg.norm(scores_plain), 1e-15)
-        pred_match = np.mean(preds_cipher == preds_plain) * 100
+        # ── decrypt primal weights ──
+        d = X_sub_feat.shape[1]
+        w_fhe = np.array(decrypt_vector(cc, keys, w_ct, d))
 
-        # ── comparison ──
-        b_err = abs(b_fhe - b_plain) / max(abs(b_plain), 1e-15)
-        alpha_err = np.linalg.norm(alpha_fhe - alpha_plain) / max(np.linalg.norm(alpha_plain), 1e-15)
+        print_class_report(
+            class_idx, name,
+            preds_cipher, preds_plain, y_te,
+            w_fhe, w_plain_sub, w_plain_full,
+        )
 
-        print(f"  FHE  accuracy: {acc_fhe:.2f}%")
-        print(f"  Plain accuracy: {acc_plain:.2f}%  (same subsample)")
-        print(f"  |b_err|/|b|  = {b_err:.4e}")
-        print(f"  ||a_err||/||a|| = {alpha_err:.4e}")
-        print(f"  Cipher vs plain scores ||err||/||s|| = {score_err:.4e}")
-        print(f"  Cipher vs plain prediction match = {pred_match:.2f}%")
+        # ── serialize model ──
+        out_dir = f"models/class_{class_idx}"
+        solv.serialize_model(cc, keys, b_ct, w_ct, out_dir, mode_str=mode_str)
+        print(f"  Model serialized to {out_dir}/  [{mode_str}]")
         print()
 
         classifiers.append({
             "class_idx": class_idx,
-            "scores": scores_fhe,
+            "scores": scores_cipher,
         })
 
     # ── OvR multiclass accuracy ──

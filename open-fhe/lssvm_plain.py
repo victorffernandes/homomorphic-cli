@@ -61,7 +61,11 @@ def predict_lssvm(
     y_train: np.ndarray,
     b: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Predict using the linear-kernel LSSVM model.
+    """Predict using a primal-weight LSSVM model.
+
+    For non-linear kernels with explicit feature maps (polynomial,
+    homogeneous polynomial), pass phi(X_train) and phi(X_test) instead
+    of raw features — the primal weight formula is kernel-agnostic.
 
     Returns (predictions, raw_scores).
     predictions: signs in {-1, +1}.

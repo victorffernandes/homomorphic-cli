@@ -8,11 +8,12 @@ Chebyshev domains derived per-step from plaintext simulation.
 
 from __future__ import annotations
 
-import math
+import gc
 from typing import Tuple
 
 from openfhe import *
 
+from qr_householder_plain import matmul, fro_norm, sub
 from .utils import (
     encrypt_matrix_cols,
     encrypt_identity_cols,
@@ -20,15 +21,67 @@ from .utils import (
     sum_slots,
     he_sqrt,
     he_inv,
-    safe_rotate,
     replicate_slot_0,
-    sum_slots,
-    simulate_norms
+    simulate_norms,
+    simulate_diag_bounds,
+    he_matmul_T_vec,
+    he_back_substitute,
+    he_primal_weights,
 )
 
 
-def setup_crypto_context(mult_depth: int, N: int = 8192) -> Tuple:
-    """CKKS context with rotation keys for column extraction (1..150), slot-0 broadcast, and small negative shifts."""
+def _rotation_indices(matrix_size: int, n_test: int = None, feature_dim: int = None) -> list:
+    """Return the minimal set of rotation indices for a given matrix size, test set size, and feature dimension.
+
+    feature_dim: maximum feature dimension after any kernel feature map — ensures sum_slots
+                 has rotation keys for powers-of-2 up to feature_dim.
+    """
+    matrix_size = 1 if matrix_size is None else max(1, int(matrix_size))
+    n_test = matrix_size if n_test is None else max(1, int(n_test))
+    neg_shift_limit = max(matrix_size, n_test)
+
+    pos_shifts = list(range(1, matrix_size))
+    neg_shifts = [-i for i in range(1, neg_shift_limit)]
+
+    # Powers-of-2 for matrix operations
+    pos_pow2, step = [], 1
+    while step < matrix_size:
+        pos_pow2.append(step)
+        step *= 2
+
+    neg_pow2, step = [], 1
+    while step < matrix_size:
+        neg_pow2.append(-step)
+        step *= 2
+
+    # Additional powers-of-2 for sum_slots over feature_dim (predict_primal_cipher)
+    feat_pow2 = []
+    if feature_dim is not None and feature_dim > matrix_size:
+        step = 1
+        while step < feature_dim:
+            feat_pow2.append(step)
+            step *= 2
+
+    return sorted(set(pos_shifts + neg_shifts + pos_pow2 + neg_pow2 + feat_pow2))
+
+
+def setup_crypto_context(mult_depth: int, N: int = None,
+                         matrix_size: int = None, n_test: int = None,
+                         feature_dim: int = None) -> Tuple:
+    """CKKS context with targeted rotation keys for the active matrix and test sizes.
+
+    feature_dim: maximum feature dimension after any kernel feature map.  Pass the
+                 largest d across all OvR classifiers so sum_slots has the needed keys.
+    Ring dimension N is auto-scaled from mult_depth if not provided.
+    """
+    if N is None:
+        total_mod_bits = 60 + mult_depth * 50
+        N_min = 2 * total_mod_bits
+        N = 1
+        while N < N_min:
+            N <<= 1
+        N = max(N, 1024)
+
     params = CCParamsCKKSRNS()
     params.SetMultiplicativeDepth(mult_depth)
     params.SetScalingModSize(50)
@@ -47,15 +100,14 @@ def setup_crypto_context(mult_depth: int, N: int = 8192) -> Tuple:
     keys = cc.KeyGen()
     cc.EvalMultKeyGen(keys.secretKey)
 
-    log_slots = int(math.ceil(math.log2(N // 2)))
-    rot_indices = list(range(1, 151)) + [-(1 << i) for i in range(log_slots)] + [-3]
+    rot_indices = _rotation_indices(matrix_size, n_test, feature_dim=feature_dim)
     cc.EvalRotateKeyGen(keys.secretKey, rot_indices)
 
     return cc, keys
 
+
 def householder_step_fhe_col(
     cc,
-    keys,
     R_cts: list,
     Q_cols: list,
     k: int,
@@ -102,20 +154,22 @@ def householder_step_fhe_col(
     norm_at_k = safe_rotate(cc, norm_ct, -k)
     v_ct = cc.EvalAdd(x_ct, norm_at_k)
 
-    tau_bc = replicate_slot_0(cc, two_over_vtv_ct, slots)
+    active_slots = max(1, min(m, slots))
+
+    tau_bc = replicate_slot_0(cc, two_over_vtv_ct, active_slots)
     tau_v_ct = cc.EvalMult(tau_bc, v_ct)
 
     for j in range(n):
         dot_ct = cc.EvalMult(v_ct, R_cts[j])
         w_j_raw = sum_slots(cc, dot_ct, m)
         w_j_slot0 = cc.EvalMult(w_j_raw, ptxt_e0)
-        w_j_bc = replicate_slot_0(cc, w_j_slot0, slots)
+        w_j_bc = replicate_slot_0(cc, w_j_slot0, active_slots)
         R_cts[j] = cc.EvalSub(R_cts[j], cc.EvalMult(tau_v_ct, w_j_bc))
 
     v_bc = []
     for j in range(length):
         vj_slot0 = cc.EvalMult(safe_rotate(cc, v_ct, k + j), ptxt_e0)
-        v_bc.append(replicate_slot_0(cc, vj_slot0, slots))
+        v_bc.append(replicate_slot_0(cc, vj_slot0, active_slots))
 
     d_ct = cc.EvalMult(v_bc[0], Q_cols[k])
     for j in range(1, length):
@@ -125,28 +179,33 @@ def householder_step_fhe_col(
         update = cc.EvalMult(cc.EvalMult(tau_bc, v_bc[i]), d_ct)
         Q_cols[k + i] = cc.EvalSub(Q_cols[k + i], update)
 
-def solver(
+    del v_bc, tau_bc, tau_v_ct, v_ct, d_ct
+    gc.collect()
+
+
+def _qr(
     cc,
     keys,
     A: list,
     D_sqrt: int = 64,
     D_inv: int = 64,
-) -> Tuple[list, list]:
-    """Fully homomorphic Householder QR with column-packed R. Returns decrypted (Q, R). Chebyshev bounds from plaintext simulation with margin=10."""
+    diag_bounds: list = None,
+) -> Tuple[list, list, list]:
+    """Column-packed Householder QR (internal). Returns (Q_cols, R_cts, diag_bounds)."""
     m, n = len(A), len(A[0])
-
-    step_norms = simulate_norms(A)
-    margin = 10.0
 
     R_cts = encrypt_matrix_cols(cc, keys, A)
     Q_cols = encrypt_identity_cols(cc, keys, m)
+
+    step_norms = simulate_norms(A)
+    diag_bounds = simulate_diag_bounds(A, diag_bounds=diag_bounds)
+    margin = 2.0
 
     steps = min(m, n)
     for k in range(steps):
         ns, vt = step_norms[k]
         householder_step_fhe_col(
             cc,
-            keys,
             R_cts,
             Q_cols,
             k,
@@ -160,4 +219,128 @@ def solver(
             D_inv=D_inv,
         )
 
-    return Q_cols, R_cts
+    return Q_cols, R_cts, diag_bounds
+
+
+def solver(
+    cc,
+    keys,
+    H: list,
+    rhs: list,
+    X_train,
+    y_train,
+    D_sqrt: int = 64,
+    D_inv: int = 64,
+    D_inv_backsub: int = 64,
+) -> Tuple:
+    """Solve H @ x = rhs fully in FHE using column-packed QR, then compute primal weights.
+
+    Returns (b_ct, w_ct, n):
+      b_ct — encrypted bias scalar in slot 0.
+      w_ct — encrypted primal weight vector in slots 0..d-1.
+      n    — solution size (n_train + 1).
+    """
+    m, n = len(H), len(H[0])
+    slots = cc.GetRingDimension() // 2
+
+    Q_cols, R_cts, diag_bounds = _qr(cc, keys, H, D_sqrt=D_sqrt, D_inv=D_inv)
+    c_ct = he_matmul_T_vec(cc, Q_cols, rhs, m, n)
+    x_ct = he_back_substitute(cc, keys, R_cts, c_ct, n,
+                              diag_bounds=diag_bounds, D_inv=D_inv_backsub)
+
+    e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
+    b_ct = cc.EvalMult(x_ct, e0_ptxt)
+    w_ct = he_primal_weights(cc, x_ct, X_train, y_train)
+
+    return b_ct, w_ct, n
+
+
+def serialize_model(cc, keys, b_ct, w_ct, out_dir: str,
+                    mode_str: str = "primal:linear", fmt=BINARY) -> None:
+    """Serialize crypto context, public/secret keys, bias, primal weights, and mode to out_dir.
+
+    Eval keys (mult + rotation) are not serialized — regenerate them on load with
+    cc.EvalMultKeyGen(keys.secretKey) and cc.EvalRotateKeyGen(keys.secretKey, indices).
+    """
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+    assert SerializeToFile(f"{out_dir}/cryptocontext.bin", cc, fmt), \
+        "Failed to serialize crypto context"
+    assert SerializeToFile(f"{out_dir}/public_key.bin", keys.publicKey, fmt), \
+        "Failed to serialize public key"
+    assert SerializeToFile(f"{out_dir}/secret_key.bin", keys.secretKey, fmt), \
+        "Failed to serialize secret key"
+    assert SerializeToFile(f"{out_dir}/bias.bin", b_ct, fmt), \
+        "Failed to serialize bias ciphertext"
+    assert SerializeToFile(f"{out_dir}/weights.bin", w_ct, fmt), \
+        "Failed to serialize weight ciphertext"
+    with open(f"{out_dir}/mode.txt", "w") as f:
+        f.write(mode_str)
+
+
+def load_model(out_dir: str, d: int, n_test: int = None, fmt=BINARY):
+    """Load a serialized model from out_dir and regenerate eval keys in memory.
+
+    d:       feature dimension (used to size rotation keys).
+    n_test:  number of test samples (used to size negative rotation keys).
+
+    Returns (cc, keys, b_ct, w_ct, mode_str).
+    """
+    cc, ok = DeserializeCryptoContext(f"{out_dir}/cryptocontext.bin", fmt)
+    assert ok, f"Failed to deserialize crypto context from {out_dir}"
+
+    pk, ok = DeserializePublicKey(f"{out_dir}/public_key.bin", fmt)
+    assert ok, f"Failed to deserialize public key from {out_dir}"
+
+    sk, ok = DeserializePrivateKey(f"{out_dir}/secret_key.bin", fmt)
+    assert ok, f"Failed to deserialize secret key from {out_dir}"
+
+    b_ct, ok = DeserializeCiphertext(f"{out_dir}/bias.bin", fmt)
+    assert ok, f"Failed to deserialize bias from {out_dir}"
+
+    w_ct, ok = DeserializeCiphertext(f"{out_dir}/weights.bin", fmt)
+    assert ok, f"Failed to deserialize weights from {out_dir}"
+
+    with open(f"{out_dir}/mode.txt") as f:
+        mode_str = f.read().strip()
+
+    cc.EvalMultKeyGen(sk)
+    rot_indices = _rotation_indices(d, n_test)
+    cc.EvalRotateKeyGen(sk, rot_indices)
+
+    class _Keys:
+        pass
+
+    keys = _Keys()
+    keys.publicKey = pk
+    keys.secretKey = sk
+
+    return cc, keys, b_ct, w_ct, mode_str
+
+
+def transpose(a: list) -> list:
+    m, n = len(a), len(a[0])
+    return [[a[i][j] for i in range(m)] for j in range(n)]
+
+
+def verify_fhe(A: list, Q: list, R: list, tol: float = 1e-4) -> bool:
+    """Verify ||A - QR||_F / ||A||_F, ||Q^T Q - I||_F, and max |R[i,j]| for i > j against tol."""
+    m, n = len(A), len(A[0])
+    norm_A = fro_norm(A)
+
+    rel_recon = fro_norm(sub(A, matmul(Q, R))) / norm_A if norm_A > 0 else 0.0
+    print(f"  ||A - QR||_F / ||A||_F = {rel_recon:.2e}  (target < {tol:.0e})")
+
+    I = [[1.0 if i == j else 0.0 for j in range(m)] for i in range(m)]
+    ortho_err = fro_norm(sub(matmul(transpose(Q), Q), I))
+    print(f"  ||Q^T Q - I||_F       = {ortho_err:.2e}  (target < {tol:.0e})")
+
+    max_lower = max(
+        (abs(R[i][j]) for i in range(m) for j in range(min(i, n))),
+        default=0.0,
+    )
+    print(f"  max |R[i,j]| (i > j)  = {max_lower:.2e}  (target < {tol:.0e})")
+
+    ok = rel_recon < tol and ortho_err < tol and max_lower < tol
+    print(f"  PASS: {ok}\n")
+    return ok

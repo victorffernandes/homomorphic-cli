@@ -337,3 +337,37 @@ def he_back_substitute(cc, keys, R_cts: list, c_ct, n: int,
         x_ct = cc.EvalAdd(x_ct, x_i)
 
     return x_ct
+
+
+def he_primal_weights(cc, x_ct, X_train, y_train):
+    """Compute primal weight vector w = Σᵢ αᵢ·yᵢ·x_train_i inside FHE.
+
+    x_ct:    encrypted [b, α₀, ..., α_{n-1}] with b in slot 0, αᵢ in slot i+1.
+    X_train: plaintext training data (n_train, d).
+    y_train: plaintext labels (n_train,), values ±1.
+
+    Returns w_ct: encrypted d-dimensional weight vector in slots 0..d-1.
+    Depth cost: +2 levels (extract αᵢ + multiply by plaintext row).
+    """
+    slots = cc.GetRingDimension() // 2
+    n_train = len(X_train)
+    d = len(X_train[0])
+
+    e0_vec = [0.0] * slots
+    e0_vec[0] = 1.0
+    e0_ptxt = cc.MakeCKKSPackedPlaintext(e0_vec)
+
+    w_ct = None
+    for i in range(n_train):
+        # Extract αᵢ from slot i+1 to slot 0, then broadcast to slots 0..d-1
+        alpha_i_ct = cc.EvalMult(safe_rotate(cc, x_ct, i + 1), e0_ptxt)  # depth +1
+        alpha_i_bc = replicate_slot_0(cc, alpha_i_ct, d)                  # depth +0
+
+        # Plaintext scaled training row: yᵢ · x_train_i
+        sv = [float(y_train[i] * X_train[i][k]) for k in range(d)] + [0.0] * (slots - d)
+        sv_ptxt = cc.MakeCKKSPackedPlaintext(sv)
+
+        term = cc.EvalMult(alpha_i_bc, sv_ptxt)                           # depth +1
+        w_ct = term if w_ct is None else cc.EvalAdd(w_ct, term)
+
+    return w_ct

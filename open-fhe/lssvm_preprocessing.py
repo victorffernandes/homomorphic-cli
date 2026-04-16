@@ -7,7 +7,17 @@ Given dataset X, labels y, and regularisation parameter gamma, assembles:
 
     rhs = [0, y_1, ..., y_N]^T
 
-where Omega_ij = y_i * K(x_i, x_j) * y_j  (kernel trick with linear kernel).
+where Omega_ij = y_i * K(x_i, x_j) * y_j.
+
+Kernel options
+--------------
+linear_kernel            : K(x,y) = x·y                    (default)
+polynomial_kernel        : K(x,y) = (x·y + c)^degree
+homogeneous_poly_kernel  : K(x,y) = (x·y)^degree
+
+For kernels with explicit finite feature maps (linear, polynomial,
+homogeneous_poly) the corresponding feature map functions allow full
+primal-weight computation — no training data needed at inference.
 """
 
 from __future__ import annotations
@@ -18,10 +28,58 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 
-def linear_kernel(X: np.ndarray) -> np.ndarray:
-    """K_ij = x_i . x_j"""
-    return X @ X.T
+# ── Kernel functions ──────────────────────────────────────────────
 
+def linear_kernel(X: np.ndarray, X2: np.ndarray = None) -> np.ndarray:
+    """K[i,j] = x_i · x_j"""
+    if X2 is None:
+        X2 = X
+    return X @ X2.T
+
+
+def polynomial_kernel(X: np.ndarray, X2: np.ndarray = None,
+                      degree: int = 2, c: float = 1.0) -> np.ndarray:
+    """K[i,j] = (x_i · x_j + c)^degree"""
+    if X2 is None:
+        X2 = X
+    return (X @ X2.T + c) ** degree
+
+
+def homogeneous_poly_kernel(X: np.ndarray, X2: np.ndarray = None,
+                             degree: int = 2) -> np.ndarray:
+    """K[i,j] = (x_i · x_j)^degree"""
+    if X2 is None:
+        X2 = X
+    return (X @ X2.T) ** degree
+
+
+# ── Feature maps (explicit φ such that K(x,y) = φ(x)·φ(y)) ───────
+
+def poly_feature_map(X: np.ndarray, degree: int = 2, c: float = 1.0) -> np.ndarray:
+    """Explicit feature map for polynomial kernel (x·y + c)^degree.
+
+    Uses sklearn PolynomialFeatures which scales interaction terms so that
+    φ(x)·φ(y) == (x·y + c)^degree exactly when c=1 (standard normalisation).
+    For c != 1, features are pre-scaled by sqrt(c) for the bias column.
+    Output shape: (N, C(d+degree, degree)).
+    """
+    from sklearn.preprocessing import PolynomialFeatures
+    phi = PolynomialFeatures(degree=degree, include_bias=True).fit_transform(X)
+    if c != 1.0:
+        phi[:, 0] *= np.sqrt(c)  # scale bias term to match (x·y + c)^degree
+    return phi
+
+
+def homogeneous_poly_feature_map(X: np.ndarray, degree: int = 2) -> np.ndarray:
+    """Explicit feature map for homogeneous polynomial kernel (x·y)^degree.
+
+    No bias term. Output shape: (N, C(d+degree-1, degree)).
+    """
+    from sklearn.preprocessing import PolynomialFeatures
+    return PolynomialFeatures(degree=degree, include_bias=False).fit_transform(X)
+
+
+# ── Matrix assembly ───────────────────────────────────────────────
 
 def build_omega(K: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Omega_ij = y_i * K_ij * y_j"""
@@ -30,7 +88,8 @@ def build_omega(K: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 def build_lssvm_matrix(
-    X: np.ndarray, y: np.ndarray, gamma: float
+    X: np.ndarray, y: np.ndarray, gamma: float,
+    kernel=linear_kernel,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Assemble the (N+1)x(N+1) block matrix H and the rhs vector.
 
@@ -49,7 +108,7 @@ def build_lssvm_matrix(
         raise ValueError(f"gamma must be > 0, got {gamma}")
 
     N = len(y)
-    K = linear_kernel(X)
+    K = kernel(X)
     Omega = build_omega(K, y)
 
     H = np.zeros((N + 1, N + 1))
