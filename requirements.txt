@@ -1,4 +1,6 @@
 numpy
 scipy>=1.11.0
+scikit-learn
 pytest>=7.4.0
 pytest-cov>=4.1.0
+desilofhe>=1.11.2

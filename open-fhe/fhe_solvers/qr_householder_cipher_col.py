@@ -344,3 +344,41 @@ def verify_fhe(A: list, Q: list, R: list, tol: float = 1e-4) -> bool:
     ok = rel_recon < tol and ortho_err < tol and max_lower < tol
     print(f"  PASS: {ok}\n")
     return ok
+
+
+# ─── Compatibility exports (used by lssvm_cipher.py) ───
+
+def decrypt_vector(cc, keys, ct, length: int) -> list:
+    """Decrypt and extract first length values (compatible with lssvm_cipher.py)."""
+    from .utils import decrypt_vector as _decrypt_vector
+    return _decrypt_vector(cc, keys, ct, length)
+
+
+def get_slot_count(cc) -> int:
+    """Get slot count (compatible with lssvm_cipher.py)."""
+    return cc.GetRingDimension() // 2
+
+
+def predict_cipher(cc, keys, b_ct, w_ct, X_test):
+    """Score test samples using encrypted primal weights (compatible with lssvm_cipher.py)."""
+    from .utils import sum_slots, safe_rotate
+    import numpy as np
+
+    slots = cc.GetRingDimension() // 2
+    n_test, d = X_test.shape
+    e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
+
+    scores_ct = None
+    for j in range(n_test):
+        xj = list(X_test[j]) + [0.0] * (slots - d)
+        xj_ptxt = cc.MakeCKKSPackedPlaintext(xj)
+
+        dot = cc.EvalMult(w_ct, xj_ptxt)
+        score = sum_slots(cc, dot, d)
+        score = cc.EvalAdd(score, b_ct)
+        score = cc.EvalMult(score, e0_ptxt)
+        if j != 0:
+            score = safe_rotate(cc, score, -j)
+        scores_ct = score if scores_ct is None else cc.EvalAdd(scores_ct, score)
+
+    return scores_ct

@@ -15,12 +15,15 @@ import time
 import importlib
 import numpy as np
 
-from fhe_solvers.utils import sum_slots, safe_rotate
-from fhe_solvers.utils import decrypt_vector, depth_for_size
+from fhe_solvers.utils import depth_for_size
 from lssvm_preprocessing import (
-    prepare_iris_binary, build_lssvm_matrix,
-    linear_kernel, polynomial_kernel, homogeneous_poly_kernel,
-    poly_feature_map, homogeneous_poly_feature_map,
+    prepare_iris_binary,
+    build_lssvm_matrix,
+    linear_kernel,
+    polynomial_kernel,
+    homogeneous_poly_kernel,
+    poly_feature_map,
+    homogeneous_poly_feature_map,
 )
 from lssvm_plain import predict_lssvm
 from metrics import print_class_report
@@ -29,14 +32,14 @@ solver_name = sys.argv[1] if len(sys.argv) > 1 else "qr_householder_cipher_row"
 solv = importlib.import_module(f"fhe_solvers.{solver_name}")
 
 # ── configuration ──────────────────────────────────────────────────
-N_PER_CLASS    = 2    # samples per binary class → H is (2*N+1) x (2*N+1)
-D_SQRT         = 2    # Chebyshev degree for sqrt (QR step)
-D_INV          = 2    # Chebyshev degree for 1/t (QR step — vtv reciprocal)
-D_INV_BACKSUB  = 8    # Chebyshev degree for 1/t in back-sub
-DEPTH_SAFETY   = 1.15 # calibrated FLEXIBLEAUTO safety factor
-DEPTH_OVERRIDE = None # set int to bypass estimator during experimentation
-N_OVERRIDE     = None # set int to force ring dimension (None = auto-scale from depth)
-GAMMA          = 1.0  # regularisation
+N_PER_CLASS = 2  # samples per binary class → H is (2*N+1) x (2*N+1)
+D_SQRT = 2  # Chebyshev degree for sqrt (QR step)
+D_INV = 2  # Chebyshev degree for 1/t (QR step — vtv reciprocal)
+D_INV_BACKSUB = 8  # Chebyshev degree for 1/t in back-sub
+DEPTH_SAFETY = 1.15  # calibrated FLEXIBLEAUTO safety factor
+DEPTH_OVERRIDE = None  # set int to bypass estimator during experimentation
+N_OVERRIDE = None  # set int to force ring dimension (None = auto-scale from depth)
+GAMMA = 1.0  # regularisation
 
 # ── Kernel selection per OvR class ────────────────────────────────
 # Available options:
@@ -52,48 +55,19 @@ CLASS_KERNEL_SELECTION = {
 }
 
 _KERNEL_REGISTRY = {
-    "linear":    (linear_kernel,             None,                         "primal:linear"),
-    "poly":      (polynomial_kernel,         poly_feature_map,             "primal:poly:degree=2:c=1.0"),
-    "homo_poly": (homogeneous_poly_kernel,   homogeneous_poly_feature_map, "primal:homo_poly:degree=2"),
+    "linear": (linear_kernel, None, "primal:linear"),
+    "poly": (polynomial_kernel, poly_feature_map, "primal:poly:degree=2:c=1.0"),
+    "homo_poly": (
+        homogeneous_poly_kernel,
+        homogeneous_poly_feature_map,
+        "primal:homo_poly:degree=2",
+    ),
 }
 
 CLASS_KERNELS = {
     idx: (name,) + _KERNEL_REGISTRY[name]
     for idx, name in CLASS_KERNEL_SELECTION.items()
 }
-
-
-def predict_primal_cipher(cc, b_ct, w_ct, X_test: np.ndarray):
-    """Score test samples using encrypted primal weights.
-
-    b_ct:   encrypted bias scalar (slot 0).
-    w_ct:   encrypted primal weight vector (slots 0..d-1).
-    X_test: plaintext test data (n_test, d) — pass phi(X_test) for non-linear kernels.
-
-    For each test sample j:
-        score_j = b + w · x_test_j
-
-    Returns scores_ct with score_j in slot j.
-    """
-    slots = cc.GetRingDimension() // 2
-    n_test, d = X_test.shape
-    e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
-
-    scores_ct = None
-    for j in range(n_test):
-        xj = list(X_test[j]) + [0.0] * (slots - d)
-        xj_ptxt = cc.MakeCKKSPackedPlaintext(xj)
-
-        dot = cc.EvalMult(w_ct, xj_ptxt)       # w · x_test_j  (depth +1)
-        score = sum_slots(cc, dot, d)           # sum to slot 0 (depth +0)
-        score = cc.EvalAdd(score, b_ct)         # + b           (depth +0)
-        score = cc.EvalMult(score, e0_ptxt)     # mask slot 0   (depth +1)
-
-        if j != 0:
-            score = safe_rotate(cc, score, -j)
-        scores_ct = score if scores_ct is None else cc.EvalAdd(scores_ct, score)
-
-    return scores_ct
 
 
 def subsample_for_fhe(
@@ -126,7 +100,11 @@ def main():
     # All sub-problems have the same raw H size before feature expansion
     n_raw = 2 * N_PER_CLASS + 1
     depth = depth_for_size(
-        n_raw, n_raw, D_SQRT, D_INV, D_INV_BACKSUB,
+        n_raw,
+        n_raw,
+        D_SQRT,
+        D_INV,
+        D_INV_BACKSUB,
         safety_factor=DEPTH_SAFETY,
         depth_override=DEPTH_OVERRIDE,
     )
@@ -143,16 +121,23 @@ def main():
         max_feat_dim = max(max_feat_dim, d)
 
     print(f"=== LSSVM FHE Solver (Iris OvR) ===")
-    print(f"Gamma={GAMMA}  N_per_class={N_PER_CLASS}  H size={n_raw}x{n_raw}  depth={depth}")
-    print(f"Chebyshev degrees: sqrt={D_SQRT}, inv_qr={D_INV}, inv_backsub={D_INV_BACKSUB}")
+    print(
+        f"Gamma={GAMMA}  N_per_class={N_PER_CLASS}  H size={n_raw}x{n_raw}  depth={depth}"
+    )
+    print(
+        f"Chebyshev degrees: sqrt={D_SQRT}, inv_qr={D_INV}, inv_backsub={D_INV_BACKSUB}"
+    )
     print(f"Max feature dim (after kernel map): {max_feat_dim}\n")
 
     print("Setting up crypto context ...")
     t_ctx = time.perf_counter()
-    cc, keys = solv.setup_crypto_context(depth, matrix_size=n_raw, n_test=n_test,
-                                         feature_dim=max_feat_dim, N=N_OVERRIDE)
-    ring_dim = cc.GetRingDimension()
-    print(f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (N={ring_dim}, slots={ring_dim//2})\n")
+    cc, keys = solv.setup_crypto_context(
+        depth, matrix_size=n_raw, n_test=n_test, feature_dim=max_feat_dim, N=N_OVERRIDE
+    )
+    slot_count = solv.get_slot_count(cc)
+    print(
+        f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (slots={slot_count})\n"
+    )
 
     for class_idx, (X_tr, X_te, y_tr, y_te, name) in enumerate(splits):
         kernel_name, _, feature_map, mode_str = CLASS_KERNELS.get(
@@ -167,16 +152,18 @@ def main():
         # Apply feature map if needed (polynomial kernels expand to higher-dim space)
         if feature_map is not None:
             X_sub_feat = feature_map(X_sub)
-            X_te_feat  = feature_map(X_te)
+            X_te_feat = feature_map(X_te)
         else:
             X_sub_feat = X_sub
-            X_te_feat  = X_te
+            X_te_feat = X_te
 
         t_mat = time.perf_counter()
         # Build H using linear kernel on mapped features (equivalent to kernel on raw)
         H_np, rhs_np = build_lssvm_matrix(X_sub_feat, y_sub, GAMMA)
         n = H_np.shape[0]
-        print(f"  Built H ({H_np.shape[0]}x{H_np.shape[1]}), cond={np.linalg.cond(H_np):.1f} in {time.perf_counter() - t_mat:.3f}s")
+        print(
+            f"  Built H ({H_np.shape[0]}x{H_np.shape[1]}), cond={np.linalg.cond(H_np):.1f} in {time.perf_counter() - t_mat:.3f}s"
+        )
         H_list = H_np.tolist()
         rhs_list = rhs_np.tolist()
 
@@ -184,8 +171,15 @@ def main():
         print(f"  Starting FHE QR solve ({n}x{n}, depth={depth}) ...")
         t0 = time.perf_counter()
         b_ct, w_ct, _ = solv.solver(
-            cc, keys, H_list, rhs_list, X_sub_feat, y_sub,
-            D_sqrt=D_SQRT, D_inv=D_INV, D_inv_backsub=D_INV_BACKSUB,
+            cc,
+            keys,
+            H_list,
+            rhs_list,
+            X_sub_feat,
+            y_sub,
+            D_sqrt=D_SQRT,
+            D_inv=D_INV,
+            D_inv_backsub=D_INV_BACKSUB,
         )
         elapsed = time.perf_counter() - t0
         print(f"  FHE QR solve + primal weights: {elapsed:.1f}s")
@@ -195,7 +189,9 @@ def main():
         b_plain = sol_plain[0]
         alpha_plain = sol_plain[1:]
         w_plain_sub = alpha_plain @ (y_sub[:, None] * X_sub_feat)
-        preds_plain, _ = predict_lssvm(X_te_feat, X_sub_feat, alpha_plain, y_sub, b_plain)
+        preds_plain, _ = predict_lssvm(
+            X_te_feat, X_sub_feat, alpha_plain, y_sub, b_plain
+        )
 
         # ── plaintext reference — full training set ──
         X_tr_feat = feature_map(X_tr) if feature_map is not None else X_tr
@@ -206,20 +202,27 @@ def main():
 
         # ── cipher prediction (primal, no training data needed) ──
         t_cp = time.perf_counter()
-        scores_cipher_ct = predict_primal_cipher(cc, b_ct, w_ct, X_te_feat)
+        scores_cipher_ct = solv.predict_cipher(cc, keys, b_ct, w_ct, X_te_feat)
         print(f"  Cipher predict (primal): {time.perf_counter() - t_cp:.4f}s")
-        scores_cipher = np.array(decrypt_vector(cc, keys, scores_cipher_ct, len(X_te_feat)))
+        scores_cipher = np.array(
+            solv.decrypt_vector(cc, keys, scores_cipher_ct, len(X_te_feat))
+        )
         preds_cipher = np.sign(scores_cipher)
         preds_cipher[preds_cipher == 0] = 1.0
 
         # ── decrypt primal weights ──
         d = X_sub_feat.shape[1]
-        w_fhe = np.array(decrypt_vector(cc, keys, w_ct, d))
+        w_fhe = np.array(solv.decrypt_vector(cc, keys, w_ct, d))
 
         print_class_report(
-            class_idx, name,
-            preds_cipher, preds_plain, y_te,
-            w_fhe, w_plain_sub, w_plain_full,
+            class_idx,
+            name,
+            preds_cipher,
+            preds_plain,
+            y_te,
+            w_fhe,
+            w_plain_sub,
+            w_plain_full,
         )
 
         # ── serialize model ──
@@ -228,14 +231,17 @@ def main():
         print(f"  Model serialized to {out_dir}/  [{mode_str}]")
         print()
 
-        classifiers.append({
-            "class_idx": class_idx,
-            "scores": scores_cipher,
-        })
+        classifiers.append(
+            {
+                "class_idx": class_idx,
+                "scores": scores_cipher,
+            }
+        )
 
     # ── OvR multiclass accuracy ──
     from sklearn.datasets import load_iris
     from sklearn.model_selection import train_test_split
+
     iris = load_iris()
     _, _, _, y_test_raw = train_test_split(
         iris.data, iris.target, test_size=0.2, stratify=iris.target, random_state=42

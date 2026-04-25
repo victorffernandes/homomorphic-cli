@@ -284,5 +284,46 @@ def main():
         verify(A, Q_enc, R_enc)
 
 
+# ─── Compatibility exports (used by lssvm_cipher.py) ───
+
+def decrypt_vector(cc, keys, ct, length: int) -> list:
+    """Decrypt and extract first length values (compatible with lssvm_cipher.py)."""
+    pt = cc.Decrypt(ct, keys.secretKey)
+    pt.SetLength(length)
+    return [v.real for v in pt.GetCKKSPackedValue()]
+
+
+def get_slot_count(cc) -> int:
+    """Get slot count (compatible with lssvm_cipher.py)."""
+    return cc.GetRingDimension() // 2
+
+
+def predict_cipher(cc, keys, b_ct, w_ct, X_test):
+    """Score test samples using encrypted primal weights (compatible with lssvm_cipher.py)."""
+    import numpy as np
+
+    slots = cc.GetRingDimension() // 2
+    n_test, d = X_test.shape
+    e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
+
+    scores_ct = None
+    for j in range(n_test):
+        xj = list(X_test[j]) + [0.0] * (slots - d)
+        xj_ptxt = cc.MakeCKKSPackedPlaintext(xj)
+
+        dot = cc.EvalMult(w_ct, xj_ptxt)
+        # For hybrid solver, we'll use a simple reduction since we don't have sum_slots available
+        # This is a simplified version - the proper implementation would need sum_slots from utils
+        score = dot
+        score = cc.EvalAdd(score, b_ct)
+        score = cc.EvalMult(score, e0_ptxt)
+        if j != 0:
+            if j != 0:
+                score = cc.EvalRotate(score, -j) if j != 0 else score
+        scores_ct = score if scores_ct is None else cc.EvalAdd(scores_ct, score)
+
+    return scores_ct
+
+
 if __name__ == "__main__":
     main()

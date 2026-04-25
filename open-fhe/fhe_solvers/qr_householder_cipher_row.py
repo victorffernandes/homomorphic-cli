@@ -28,7 +28,9 @@ from .utils import (
 )
 
 
-def _rotation_indices(matrix_size: int, n_test: int = None, feature_dim: int = None) -> list:
+def _rotation_indices(
+    matrix_size: int, n_test: int = None, feature_dim: int = None
+) -> list:
     """Return the minimal set of rotation indices for a given matrix size, test set size, and feature dimension.
 
     feature_dim: maximum feature dimension after any kernel feature map — ensures sum_slots
@@ -63,9 +65,13 @@ def _rotation_indices(matrix_size: int, n_test: int = None, feature_dim: int = N
     return sorted(set(pos_shifts + neg_shifts + pos_pow2 + neg_pow2 + feat_pow2))
 
 
-def setup_crypto_context(mult_depth: int, N: int = None,
-                         matrix_size: int = None, n_test: int = None,
-                         feature_dim: int = None) -> Tuple:
+def setup_crypto_context(
+    mult_depth: int,
+    N: int = None,
+    matrix_size: int = None,
+    n_test: int = None,
+    feature_dim: int = None,
+) -> Tuple:
     """CKKS context with targeted rotation keys for the active matrix and test sizes.
 
     feature_dim: maximum feature dimension after any kernel feature map.  Pass the
@@ -105,6 +111,7 @@ def setup_crypto_context(mult_depth: int, N: int = None,
     cc.EvalRotateKeyGen(keys.secretKey, rot_indices)
 
     return cc, keys
+
 
 def householder_step_fhe(
     cc,
@@ -195,6 +202,7 @@ def householder_step_fhe(
     del v_bc, w_ct, d_ct, tau_bc, v0_bc
     gc.collect()
 
+
 def _qr(
     cc,
     keys,
@@ -257,8 +265,9 @@ def solver(
 
     Q_cols, R_cts, diag_bounds = _qr(cc, keys, H, D_sqrt=D_sqrt, D_inv=D_inv)
     c_ct = he_matmul_T_vec(cc, Q_cols, rhs, m, n)
-    x_ct = he_back_substitute(cc, keys, R_cts, c_ct, n,
-                              diag_bounds=diag_bounds, D_inv=D_inv_backsub)
+    x_ct = he_back_substitute(
+        cc, keys, R_cts, c_ct, n, diag_bounds=diag_bounds, D_inv=D_inv_backsub
+    )
 
     e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
     b_ct = cc.EvalMult(x_ct, e0_ptxt)
@@ -267,8 +276,9 @@ def solver(
     return b_ct, w_ct, n
 
 
-def serialize_model(cc, keys, b_ct, w_ct, out_dir: str,
-                    mode_str: str = "primal:linear", fmt=BINARY) -> None:
+def serialize_model(
+    cc, keys, b_ct, w_ct, out_dir: str, mode_str: str = "primal:linear", fmt=BINARY
+) -> None:
     """Serialize crypto context, public/secret keys, bias, primal weights, and mode to out_dir.
 
     mode_str encodes the kernel/feature-map used, e.g.:
@@ -280,17 +290,23 @@ def serialize_model(cc, keys, b_ct, w_ct, out_dir: str,
     cc.EvalMultKeyGen(keys.secretKey) and cc.EvalRotateKeyGen(keys.secretKey, indices).
     """
     import os
+
     os.makedirs(out_dir, exist_ok=True)
-    assert SerializeToFile(f"{out_dir}/cryptocontext.bin", cc, fmt), \
-        "Failed to serialize crypto context"
-    assert SerializeToFile(f"{out_dir}/public_key.bin", keys.publicKey, fmt), \
-        "Failed to serialize public key"
-    assert SerializeToFile(f"{out_dir}/secret_key.bin", keys.secretKey, fmt), \
-        "Failed to serialize secret key"
-    assert SerializeToFile(f"{out_dir}/bias.bin", b_ct, fmt), \
-        "Failed to serialize bias ciphertext"
-    assert SerializeToFile(f"{out_dir}/weights.bin", w_ct, fmt), \
-        "Failed to serialize weight ciphertext"
+    assert SerializeToFile(
+        f"{out_dir}/cryptocontext.bin", cc, fmt
+    ), "Failed to serialize crypto context"
+    assert SerializeToFile(
+        f"{out_dir}/public_key.bin", keys.publicKey, fmt
+    ), "Failed to serialize public key"
+    assert SerializeToFile(
+        f"{out_dir}/secret_key.bin", keys.secretKey, fmt
+    ), "Failed to serialize secret key"
+    assert SerializeToFile(
+        f"{out_dir}/bias.bin", b_ct, fmt
+    ), "Failed to serialize bias ciphertext"
+    assert SerializeToFile(
+        f"{out_dir}/weights.bin", w_ct, fmt
+    ), "Failed to serialize weight ciphertext"
     with open(f"{out_dir}/mode.txt", "w") as f:
         f.write(mode_str)
 
@@ -339,6 +355,7 @@ def transpose(a: list) -> list:
     m, n = len(a), len(a[0])
     return [[a[i][j] for i in range(m)] for j in range(n)]
 
+
 def verify_fhe(A: list, Q: list, R: list, tol: float = 1e-4) -> bool:
     """Verify ||A - QR||_F / ||A||_F, ||Q^T Q - I||_F, and max |R[i,j]| for i > j against tol."""
     m, n = len(A), len(A[0])
@@ -361,3 +378,42 @@ def verify_fhe(A: list, Q: list, R: list, tol: float = 1e-4) -> bool:
     print(f"  PASS: {ok}\n")
     return ok
 
+
+# ─── Compatibility exports (used by lssvm_cipher.py) ───
+
+
+def decrypt_vector(cc, keys, ct, length: int) -> list:
+    """Decrypt and extract first length values (compatible with lssvm_cipher.py)."""
+    from .utils import decrypt_vector as _decrypt_vector
+
+    return _decrypt_vector(cc, keys, ct, length)
+
+
+def get_slot_count(cc) -> int:
+    """Get slot count (compatible with lssvm_cipher.py)."""
+    return cc.GetRingDimension() // 2
+
+
+def predict_cipher(cc, keys, b_ct, w_ct, X_test):
+    """Score test samples using encrypted primal weights (compatible with lssvm_cipher.py)."""
+    from .utils import sum_slots, safe_rotate
+    import numpy as np
+
+    slots = cc.GetRingDimension() // 2
+    n_test, d = X_test.shape
+    e0_ptxt = cc.MakeCKKSPackedPlaintext([1.0] + [0.0] * (slots - 1))
+
+    scores_ct = None
+    for j in range(n_test):
+        xj = list(X_test[j]) + [0.0] * (slots - d)
+        xj_ptxt = cc.MakeCKKSPackedPlaintext(xj)
+
+        dot = cc.EvalMult(w_ct, xj_ptxt)
+        score = sum_slots(cc, dot, d)
+        score = cc.EvalAdd(score, b_ct)
+        score = cc.EvalMult(score, e0_ptxt)
+        if j != 0:
+            score = safe_rotate(cc, score, -j)
+        scores_ct = score if scores_ct is None else cc.EvalAdd(scores_ct, score)
+
+    return scores_ct
