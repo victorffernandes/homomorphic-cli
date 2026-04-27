@@ -1,0 +1,219 @@
+---
+- name: Provision OpenFHE + LSSVM runtime
+  hosts: fhe
+  become: true
+
+  vars:
+    openfhe_version: v1.5.1
+    repo_root: "{{ lookup('env', 'PWD') }}/.."
+    app_dir: /opt/lssvm/app
+    venv_dir: /opt/lssvm/venv
+    build_dir: /opt/build/openfhe
+    openfhe_repo: https://github.com/openfheorg/openfhe-development.git
+
+  tasks:
+    - name: Wait for apt lock to clear (cloud-init may still be running)
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+      changed_when: false
+
+    - name: Update apt cache (retry — fresh instance DNS may flap)
+      ansible.builtin.apt:
+        update_cache: true
+      register: apt_update
+      retries: 10
+      delay: 15
+      until: apt_update is succeeded
+
+    - name: Install build deps
+      ansible.builtin.apt:
+        name:
+          - build-essential
+          - cmake
+          - git
+          - libssl-dev
+          - libomp-dev
+          - autoconf
+          - python3-dev
+          - python3-pip
+          - python3-venv
+          - rsync
+          - pkg-config
+        state: present
+
+    - name: Clone OpenFHE source
+      ansible.builtin.git:
+        repo: "{{ openfhe_repo }}"
+        dest: "{{ build_dir }}"
+        version: "{{ openfhe_version }}"
+        depth: 1
+        force: true
+
+    - name: Configure OpenFHE build
+      ansible.builtin.command:
+        cmd: cmake -S {{ build_dir }} -B {{ build_dir }}/build -DBUILD_UNITTESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_BENCHMARKS=OFF -DCMAKE_BUILD_TYPE=Release
+        creates: "{{ build_dir }}/build/Makefile"
+
+    - name: Compile OpenFHE
+      community.general.make:
+        chdir: "{{ build_dir }}/build"
+        jobs: "{{ ansible_processor_vcpus | default(2) }}"
+
+    - name: Install OpenFHE
+      community.general.make:
+        chdir: "{{ build_dir }}/build"
+        target: install
+
+    - name: Refresh linker cache
+      ansible.builtin.command: ldconfig
+      changed_when: false
+
+    - name: Ensure app directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+
+    - name: Create Python venv
+      ansible.builtin.command:
+        cmd: python3 -m venv {{ venv_dir }}
+        creates: "{{ venv_dir }}/bin/activate"
+
+    - name: Chown venv to ubuntu
+      ansible.builtin.file:
+        path: "{{ venv_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        recurse: true
+
+    - name: Upgrade pip
+      ansible.builtin.pip:
+        name: ["pip", "wheel", "setuptools"]
+        state: latest
+        virtualenv: "{{ venv_dir }}"
+      become_user: ubuntu
+
+    - name: Sync LSSVM source tree
+      ansible.posix.synchronize:
+        src: "{{ repo_root }}/open-fhe/"
+        dest: "{{ app_dir }}/"
+        delete: true
+        rsync_opts:
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=terraform"
+          - "--exclude=ansible"
+          - "--exclude=.terraform"
+      become: false
+
+    - name: Copy requirements.txt
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/requirements.txt"
+        dest: "{{ app_dir }}/requirements.txt"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Install Python deps
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+      become_user: ubuntu
+
+    # Real bindings live at github.com/openfheorg/openfhe-python — the PyPI
+    # `openfhe` package is unrelated namesquat. Always build from source.
+    - name: Uninstall stray PyPI 'openfhe' if present
+      ansible.builtin.pip:
+        name: openfhe
+        state: absent
+        virtualenv: "{{ venv_dir }}"
+      become_user: ubuntu
+      failed_when: false
+
+    - name: Install pybind11 (build dep for openfhe-python)
+      ansible.builtin.pip:
+        name: pybind11
+        virtualenv: "{{ venv_dir }}"
+      become_user: ubuntu
+
+    - name: Clone openfhe-python
+      ansible.builtin.git:
+        repo: https://github.com/openfheorg/openfhe-python.git
+        dest: /opt/build/openfhe-python
+        version: "{{ openfhe_python_version | default('main') }}"
+        depth: 1
+        force: true
+
+    - name: Chown openfhe-python build dir
+      ansible.builtin.file:
+        path: /opt/build/openfhe-python
+        owner: ubuntu
+        group: ubuntu
+        recurse: true
+
+    # openfhe-python is cmake-only (no setup.py/pyproject.toml) — build .so manually,
+    # then copy into the venv's site-packages.
+    - name: Resolve pybind11 cmake dir
+      ansible.builtin.command:
+        cmd: "{{ venv_dir }}/bin/python -m pybind11 --cmakedir"
+      register: pybind11_cmakedir
+      changed_when: false
+      become_user: ubuntu
+
+    - name: Configure openfhe-python build
+      ansible.builtin.command:
+        cmd: >
+          cmake -S /opt/build/openfhe-python -B /opt/build/openfhe-python/build
+          -DCMAKE_PREFIX_PATH=/usr/local;{{ pybind11_cmakedir.stdout }}
+          -Dpybind11_DIR={{ pybind11_cmakedir.stdout }}
+          -DPYTHON_EXECUTABLE={{ venv_dir }}/bin/python
+        creates: /opt/build/openfhe-python/build/Makefile
+      become_user: ubuntu
+
+    - name: Compile openfhe-python
+      community.general.make:
+        chdir: /opt/build/openfhe-python/build
+        jobs: "{{ ansible_processor_vcpus | default(2) }}"
+      become_user: ubuntu
+
+    - name: Locate built openfhe .so
+      ansible.builtin.find:
+        paths: /opt/build/openfhe-python/build
+        patterns: "openfhe*.so"
+      register: openfhe_so
+
+    - name: Fail if .so missing
+      ansible.builtin.assert:
+        that: openfhe_so.files | length > 0
+        fail_msg: "openfhe-python build produced no .so — check build logs"
+
+    - name: Discover venv site-packages
+      ansible.builtin.command:
+        cmd: "{{ venv_dir }}/bin/python -c 'import sysconfig; print(sysconfig.get_paths()[\"purelib\"])'"
+      register: site_packages
+      changed_when: false
+
+    - name: Install openfhe .so into venv site-packages
+      ansible.builtin.copy:
+        src: "{{ openfhe_so.files[0].path }}"
+        dest: "{{ site_packages.stdout }}/{{ openfhe_so.files[0].path | basename }}"
+        remote_src: true
+        owner: ubuntu
+        group: ubuntu
+        mode: "0644"
+
+    - name: Drop run.sh helper
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/run.sh"
+        owner: ubuntu
+        group: ubuntu
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "{{ app_dir }}"
+          source "{{ venv_dir }}/bin/activate"
+          export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
+          exec python lssvm_cipher.py "$@"

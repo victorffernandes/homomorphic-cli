@@ -3,6 +3,18 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+open-fhe/terraform/variables/*
+open-fhe/terraform/.terraform
+open-fhe/terraform/terraform.tfstate
+open-fhe/terraform/terraform.tfstate.backup
+open-fhe/terraform/.terraform.lock.hcl
+
+# Ansible artifacts
+open-fhe/ansible/inventory.ini
+open-fhe/ansible/.ansible/
+open-fhe/ansible/collections/
+*.retry
+
 .github/
 models/
 # C extensions
