@@ -10,13 +10,14 @@ Per-iter scalar bounds derived from plaintext CG simulation.
 from __future__ import annotations
 
 import gc
+import json
 import math
+import os
 
 from openfhe import *
 
 from .utils import (
     encrypt_matrix_rows,
-    decrypt_vector,
     he_inv,
     safe_rotate,
     sum_slots,
@@ -235,13 +236,162 @@ def cg_solve_fhe(cc, keys, H, rhs, n_iter, D_inv=4, margin=4.0):
 # ── Required interface ────────────────────────────────────────────────────────
 
 
-# Env overrides
-import os
-
 N_ITER_DEFAULT = int(os.environ.get("CG_N_ITER", "6"))
 D_INV_DEFAULT = int(os.environ.get("CG_D_INV", "8"))
 PRECOND_DEFAULT = bool(int(os.environ.get("CG_PRECOND", "1")))
 MARGIN_DEFAULT = float(os.environ.get("CG_MARGIN", "4.0"))
+CHECKPOINT_SCHEMA_VERSION = 1
+
+
+def checkpoint_capabilities():
+    return {
+        "solver": "cg_cipher",
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "public_key_optional": True,
+        "supported_policies": {"persist_public_key": True},
+    }
+
+
+def _checkpoint_metadata_path(out_dir):
+    return os.path.join(out_dir, "checkpoint.json")
+
+
+def _write_checkpoint_metadata(
+    out_dir, mode_str, checkpoint_policy, fmt, persist_public_key
+):
+    metadata = {
+        "solver": checkpoint_capabilities()["solver"],
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "mode": mode_str,
+        "format": str(fmt),
+        "checkpoint_policy": dict(checkpoint_policy or {}),
+        "artifacts": [
+            "cryptocontext.bin",
+            "secret_key.bin",
+            "bias.bin",
+            "weights.bin",
+            "mode.txt",
+        ],
+    }
+    if persist_public_key:
+        metadata["artifacts"].insert(1, "public_key.bin")
+
+    with open(_checkpoint_metadata_path(out_dir), "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def save_global_checkpoint(
+    cc,
+    keys,
+    b_ct,
+    w_ct,
+    out_dir,
+    mode_str,
+    checkpoint_policy,
+    fmt=BINARY,
+):
+    policy = dict(checkpoint_policy or {})
+    persist_public_key = bool(policy.get("persist_public_key", False))
+
+    os.makedirs(out_dir, exist_ok=True)
+    assert SerializeToFile(f"{out_dir}/cryptocontext.bin", cc, fmt)
+    assert SerializeToFile(f"{out_dir}/secret_key.bin", keys.secretKey, fmt)
+    assert SerializeToFile(f"{out_dir}/bias.bin", b_ct, fmt)
+    assert SerializeToFile(f"{out_dir}/weights.bin", w_ct, fmt)
+
+    public_key_path = f"{out_dir}/public_key.bin"
+    if persist_public_key and getattr(keys, "publicKey", None) is not None:
+        assert SerializeToFile(public_key_path, keys.publicKey, fmt)
+    elif os.path.exists(public_key_path):
+        os.remove(public_key_path)
+
+    with open(f"{out_dir}/mode.txt", "w", encoding="utf-8") as f:
+        f.write(mode_str)
+
+    _write_checkpoint_metadata(out_dir, mode_str, policy, fmt, persist_public_key)
+
+
+def _load_checkpoint_metadata(out_dir):
+    metadata_path = _checkpoint_metadata_path(out_dir)
+    if not os.path.exists(metadata_path):
+        return None
+    with open(metadata_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_global_checkpoint(out_dir, d, n_test=None, checkpoint_policy=None, fmt=BINARY):
+    import os as _os
+
+    metadata = _load_checkpoint_metadata(out_dir)
+    if metadata:
+        solver_name = metadata.get("solver")
+        if solver_name not in (None, checkpoint_capabilities()["solver"]):
+            expected = checkpoint_capabilities()["solver"]
+            raise ValueError(
+                f"Checkpoint solver mismatch: expected {expected}, got {solver_name}"
+            )
+        schema_version = int(metadata.get("schema_version", CHECKPOINT_SCHEMA_VERSION))
+        if schema_version > CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported checkpoint schema version {schema_version} in {out_dir}"
+            )
+
+    cc, ok = DeserializeCryptoContext(f"{out_dir}/cryptocontext.bin", fmt)
+    assert ok
+
+    pk = None
+    public_key_path = f"{out_dir}/public_key.bin"
+    if _os.path.exists(public_key_path):
+        pk, ok = DeserializePublicKey(public_key_path, fmt)
+        assert ok
+
+    sk, ok = DeserializePrivateKey(f"{out_dir}/secret_key.bin", fmt)
+    assert ok
+    b_ct, ok = DeserializeCiphertext(f"{out_dir}/bias.bin", fmt)
+    assert ok
+    w_ct, ok = DeserializeCiphertext(f"{out_dir}/weights.bin", fmt)
+    assert ok
+
+    with open(f"{out_dir}/mode.txt", encoding="utf-8") as f:
+        mode_str = f.read().strip()
+
+    cc.EvalMultKeyGen(sk)
+    cc.EvalRotateKeyGen(sk, _rotation_indices(d, n_test))
+
+    class _K:
+        pass
+
+    keys = _K()
+    keys.publicKey = pk
+    keys.secretKey = sk
+    return cc, keys, b_ct, w_ct, mode_str
+
+
+def serialize_model(
+    cc, keys, b_ct, w_ct, out_dir, mode_str="primal:linear", fmt=BINARY
+):
+    save_global_checkpoint(
+        cc,
+        keys,
+        b_ct,
+        w_ct,
+        out_dir,
+        mode_str,
+        checkpoint_policy={"persist_public_key": True},
+        fmt=fmt,
+    )
+
+
+def load_model(out_dir, d, n_test=None, fmt=BINARY):
+    return load_global_checkpoint(out_dir, d=d, n_test=n_test, fmt=fmt)
+
+
+def decrypt_vector(cc, keys, ct, length: int) -> list:
+    """Decrypt and extract first length values (compatible with lssvm_cipher.py)."""
+    from .utils import decrypt_vector as _decrypt_vector
+
+    return _decrypt_vector(cc, keys, ct, length)
 
 
 def _cg_with_optional_precond(cc, keys, A, b, n_iter, D_inv, margin, n):
@@ -340,7 +490,6 @@ def solver(cc, keys, H, rhs, X_train, y_train, D_sqrt=64, D_inv=64, D_inv_backsu
         import numpy as _np
 
         K_np = _np.array(K_aug)
-        u_pt = _np.linalg.solve(K_np, _np.array(y_alpha))
         v_pt = _np.linalg.solve(K_np, _np.array(ones))
         sum_v_val = float(v_pt.sum())
         m = MARGIN_DEFAULT
@@ -379,47 +528,6 @@ def solver(cc, keys, H, rhs, X_train, y_train, D_sqrt=64, D_inv=64, D_inv_backsu
     b_ct = cc.EvalMult(x_ct, e0_ptxt)
     w_ct = he_primal_weights(cc, x_ct, X_train, y_train)
     return b_ct, w_ct, n
-
-
-def serialize_model(
-    cc, keys, b_ct, w_ct, out_dir, mode_str="primal:linear", fmt=BINARY
-):
-    import os as _os
-
-    _os.makedirs(out_dir, exist_ok=True)
-    assert SerializeToFile(f"{out_dir}/cryptocontext.bin", cc, fmt)
-    assert SerializeToFile(f"{out_dir}/public_key.bin", keys.publicKey, fmt)
-    assert SerializeToFile(f"{out_dir}/secret_key.bin", keys.secretKey, fmt)
-    assert SerializeToFile(f"{out_dir}/bias.bin", b_ct, fmt)
-    assert SerializeToFile(f"{out_dir}/weights.bin", w_ct, fmt)
-    with open(f"{out_dir}/mode.txt", "w") as f:
-        f.write(mode_str)
-
-
-def load_model(out_dir, d, n_test=None, fmt=BINARY):
-    cc, ok = DeserializeCryptoContext(f"{out_dir}/cryptocontext.bin", fmt)
-    assert ok
-    pk, ok = DeserializePublicKey(f"{out_dir}/public_key.bin", fmt)
-    assert ok
-    sk, ok = DeserializePrivateKey(f"{out_dir}/secret_key.bin", fmt)
-    assert ok
-    b_ct, ok = DeserializeCiphertext(f"{out_dir}/bias.bin", fmt)
-    assert ok
-    w_ct, ok = DeserializeCiphertext(f"{out_dir}/weights.bin", fmt)
-    assert ok
-    with open(f"{out_dir}/mode.txt") as f:
-        mode_str = f.read().strip()
-
-    cc.EvalMultKeyGen(sk)
-    cc.EvalRotateKeyGen(sk, _rotation_indices(d, n_test))
-
-    class _K:
-        pass
-
-    keys = _K()
-    keys.publicKey = pk
-    keys.secretKey = sk
-    return cc, keys, b_ct, w_ct, mode_str
 
 
 def get_slot_count(cc):

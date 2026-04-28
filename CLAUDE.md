@@ -26,7 +26,7 @@ Least-Squares SVM training + inference over CKKS-encrypted data using OpenFHE. I
 - `lssvm/qr_householder.py` — plaintext QR-Householder reference
 - `lssvm/inference.py` — encrypted inference engine
 - `lssvm/solvers/cg_cipher.py` — Conjugate Gradient solver, encrypted LHS/RHS
-- `lssvm/solvers/qr_householder_cipher_{cell,col,row}.py` — three QR-Householder variants trading multiplicative depth vs slot packing
+- `lssvm/solvers/qr_householder_cipher_{col,row}.py` — two QR-Householder variants trading multiplicative depth vs slot packing
 - `lssvm/solvers/utils.py` — rotation/masking helpers shared across solvers
 - `federated_lssvm/train.py` — multi-party training driver (FedAvg over CKKS)
 - `federated_lssvm/infer.py` — federated inference

@@ -18,10 +18,21 @@ _init_parallel()
 
 import os
 import time
-import importlib
 import numpy as np
-from openfhe import SerializeToFile, DeserializeCiphertext, BINARY
+from openfhe import (
+    SerializeToFile,
+    DeserializeCiphertext,
+    DeserializeCryptoContext,
+    DeserializePrivateKey,
+    DeserializePublicKey,
+    BINARY,
+)
 
+from federated_lssvm.solver_selection import (
+    DEFAULT_SOLVER_NAME,
+    parse_solver_name,
+    resolve_solver_module,
+)
 from lssvm.solvers.utils import depth_for_size
 from lssvm.preprocessing import (
     prepare_iris_binary,
@@ -36,7 +47,7 @@ from lssvm.plain import predict_lssvm
 from config.metrics import weight_relative_error
 
 # ── solver backend ─────────────────────────────────────────────────
-solv = importlib.import_module("lssvm.solvers.cg_cipher")
+solv = None
 
 # ── configuration ──────────────────────────────────────────────────
 D_SQRT = 4
@@ -69,6 +80,16 @@ CLASS_KERNELS = {
 
 # ── per-client checkpoint helpers ──────────────────────────────────
 
+CLASS_CHECKPOINT_SCHEMA_VERSION = 1
+
+
+def _class_checkpoint_marker(class_dir: str) -> str:
+    return f"{class_dir}/checkpoint.json"
+
+
+def _class_context_exists(class_dir: str) -> bool:
+    return os.path.exists(_class_checkpoint_marker(class_dir))
+
 
 def _cts_exist(out_dir: str) -> bool:
     return os.path.exists(f"{out_dir}/bias.bin") and os.path.exists(
@@ -76,7 +97,7 @@ def _cts_exist(out_dir: str) -> bool:
     )
 
 
-def _save_cts(out_dir: str, b_ct, w_ct) -> None:
+def _save_cts(out_dir: str, cc, keys, b_ct, w_ct) -> None:
     os.makedirs(out_dir, exist_ok=True)
     assert SerializeToFile(
         f"{out_dir}/bias.bin", b_ct, BINARY
@@ -86,12 +107,64 @@ def _save_cts(out_dir: str, b_ct, w_ct) -> None:
     ), f"Failed to serialize weights to {out_dir}"
 
 
+def _save_class_context(out_dir: str, cc, keys) -> None:
+    os.makedirs(out_dir, exist_ok=True)
+    assert SerializeToFile(
+        f"{out_dir}/cryptocontext.bin", cc, BINARY
+    ), f"Failed to serialize crypto context to {out_dir}"
+    assert SerializeToFile(
+        f"{out_dir}/public_key.bin", keys.publicKey, BINARY
+    ), f"Failed to serialize public key to {out_dir}"
+    assert SerializeToFile(
+        f"{out_dir}/secret_key.bin", keys.secretKey, BINARY
+    ), f"Failed to serialize secret key to {out_dir}"
+    with open(_class_checkpoint_marker(out_dir), "w", encoding="utf-8") as f:
+        f.write(f"schema_version={CLASS_CHECKPOINT_SCHEMA_VERSION}\n")
+
+
+def _load_class_context(out_dir: str, matrix_size: int, n_test: int, feature_dim: int):
+    cc, ok = DeserializeCryptoContext(f"{out_dir}/cryptocontext.bin", BINARY)
+    assert ok, f"Failed to deserialize crypto context from {out_dir}"
+
+    pk, ok = DeserializePublicKey(f"{out_dir}/public_key.bin", BINARY)
+    assert ok, f"Failed to deserialize public key from {out_dir}"
+
+    sk, ok = DeserializePrivateKey(f"{out_dir}/secret_key.bin", BINARY)
+    assert ok, f"Failed to deserialize secret key from {out_dir}"
+
+    cc.EvalMultKeyGen(sk)
+    rot_indices_fn = getattr(solv, "_rotation_indices", None)
+    if rot_indices_fn is None:
+        raise AttributeError(
+            f"Solver module '{solv.__name__}' does not expose rotation key indices"
+        )
+    rot_indices = rot_indices_fn(matrix_size, n_test, feature_dim=feature_dim)
+    cc.EvalRotateKeyGen(sk, rot_indices)
+
+    class _Keys:
+        pass
+
+    keys = _Keys()
+    keys.publicKey = pk
+    keys.secretKey = sk
+    return cc, keys
+
+
 def _load_cts(out_dir: str):
     b_ct, ok = DeserializeCiphertext(f"{out_dir}/bias.bin", BINARY)
     assert ok, f"Failed to deserialize bias from {out_dir}"
     w_ct, ok = DeserializeCiphertext(f"{out_dir}/weights.bin", BINARY)
     assert ok, f"Failed to deserialize weights from {out_dir}"
     return b_ct, w_ct
+
+
+def _cts_are_finite(cc, keys, b_ct, w_ct, d: int) -> bool:
+    try:
+        b_val = solv.decrypt_vector(cc, keys, b_ct, 1)[0]
+        w_vals = np.array(solv.decrypt_vector(cc, keys, w_ct, d))
+    except Exception:
+        return False
+    return np.isfinite(b_val) and np.all(np.isfinite(w_vals))
 
 
 # ── subsample helper (inline copy from lssvm_cipher.py) ────────────
@@ -338,7 +411,15 @@ def _print_comparison_table(
     print()
 
 
-def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> None:
+def main(
+    k: int = 3,
+    serialize: bool = True,
+    n_per_class: int | None = None,
+    solver_name: str | None = None,
+) -> None:
+    global solv
+    solv = resolve_solver_module(solver_name or DEFAULT_SOLVER_NAME)
+
     splits = prepare_iris_binary()
     n_test = len(splits[0][1])  # 30
 
@@ -383,15 +464,34 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         # + implicit ModDown(1) + decrypt margin(2)
         + 6
     )
-    print(f"Setting up shared crypto context (depth={depth}) ...")
-    t_ctx = time.perf_counter()
-    cc, keys = solv.setup_crypto_context(
-        depth,
-        matrix_size=max_client_n,
-        n_test=n_test,
-        feature_dim=max_feat_dim,
-        N=N_OVERRIDE,
+    class_dirs = [f"models/k={k}/class_{class_idx}" for class_idx in range(len(splits))]
+    existing_ctx_dir = next(
+        (
+            class_dir
+            for class_dir in class_dirs
+            if os.path.exists(f"{class_dir}/cryptocontext.bin")
+            and os.path.exists(f"{class_dir}/public_key.bin")
+            and os.path.exists(f"{class_dir}/secret_key.bin")
+        ),
+        None,
     )
+
+    if existing_ctx_dir is not None:
+        print(f"Loading shared crypto context from {existing_ctx_dir} ...")
+        t_ctx = time.perf_counter()
+        cc, keys = _load_class_context(
+            existing_ctx_dir, max_client_n, n_test, max_feat_dim
+        )
+    else:
+        print(f"Setting up shared crypto context (depth={depth}) ...")
+        t_ctx = time.perf_counter()
+        cc, keys = solv.setup_crypto_context(
+            depth,
+            matrix_size=max_client_n,
+            n_test=n_test,
+            feature_dim=max_feat_dim,
+            N=N_OVERRIDE,
+        )
     slot_count = solv.get_slot_count(cc)
     print(
         f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (slots={slot_count})\n"
@@ -425,6 +525,9 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         parts = all_partitions[class_idx]
         b_cts, w_cts = [], []
         parts_feat = []
+        class_dir = f"models/k={k}/class_{class_idx}"
+        if not _class_context_exists(class_dir):
+            _save_class_context(class_dir, cc, keys)
         for client_id, (X_c, y_c) in enumerate(parts):
             X_c_feat = feature_map(X_c) if feature_map else X_c
             parts_feat.append((X_c_feat, y_c))
@@ -432,6 +535,32 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
             if _cts_exist(ckpt_dir):
                 print(f"  [client {client_id}] Resuming from checkpoint {ckpt_dir}")
                 b_ct_i, w_ct_i = _load_cts(ckpt_dir)
+                _d = X_c_feat.shape[1]
+                if not _cts_are_finite(cc, keys, b_ct_i, w_ct_i, _d):
+                    print(
+                        f"  [client {client_id}] Checkpoint invalid or stale, recomputing"
+                    )
+                    H_c, rhs_c = build_lssvm_matrix(X_c_feat, y_c, GAMMA)
+                    print(
+                        f"  [client {client_id}] H={H_c.shape}, cond={np.linalg.cond(H_c):.1f} ..."
+                    )
+                    t0 = time.perf_counter()
+                    b_ct_i, w_ct_i, _ = solv.solver(
+                        cc,
+                        keys,
+                        H_c.tolist(),
+                        rhs_c.tolist(),
+                        X_c_feat,
+                        y_c,
+                        D_sqrt=D_SQRT,
+                        D_inv=D_INV,
+                        D_inv_backsub=D_INV_BACKSUB,
+                    )
+                    print(
+                        f"  [client {client_id}] FHE solve: {time.perf_counter() - t0:.1f}s"
+                    )
+                    _save_cts(ckpt_dir, cc, keys, b_ct_i, w_ct_i)
+                    print(f"  [client {client_id}] Checkpoint refreshed.")
             else:
                 H_c, rhs_c = build_lssvm_matrix(X_c_feat, y_c, GAMMA)
                 print(
@@ -452,7 +581,7 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
                 print(
                     f"  [client {client_id}] FHE solve: {time.perf_counter() - t0:.1f}s"
                 )
-                _save_cts(ckpt_dir, b_ct_i, w_ct_i)
+                _save_cts(ckpt_dir, cc, keys, b_ct_i, w_ct_i)
                 print(f"  [client {client_id}] Checkpoint saved.")
             b_cts.append(b_ct_i)
             w_cts.append(w_ct_i)
@@ -547,8 +676,14 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         # Serialize global model
         if serialize:
             out_dir = f"models/k={k}/class_{class_idx}"
-            solv.serialize_model(
-                cc, keys, b_global, w_global, out_dir, mode_str=mode_str
+            solv.save_global_checkpoint(
+                cc,
+                keys,
+                b_global,
+                w_global,
+                out_dir,
+                mode_str=mode_str,
+                checkpoint_policy={"persist_public_key": False},
             )
             print(f"  Global model serialized to {out_dir}/  [{mode_str}]")
 
@@ -592,6 +727,7 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
 if __name__ == "__main__":
     args = sys.argv[1:]
     if "--smoke-test" in args:
+        solv = resolve_solver_module(parse_solver_name(args))
         smoke_test_fedavg()
         sys.exit(0)
 
@@ -605,4 +741,5 @@ if __name__ == "__main__":
     if numeric_args:
         k = int(numeric_args[0])
 
-    main(k=k, serialize=serialize, n_per_class=n_per_class)
+    solver_name = parse_solver_name(args)
+    main(k=k, serialize=serialize, n_per_class=n_per_class, solver_name=solver_name)

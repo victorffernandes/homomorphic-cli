@@ -10,9 +10,13 @@ from config.parallel import bootstrap as _init_parallel
 
 _init_parallel()
 
-import importlib
 import numpy as np
 
+from federated_lssvm.solver_selection import (
+    DEFAULT_SOLVER_NAME,
+    parse_solver_name,
+    resolve_solver_module,
+)
 from lssvm.preprocessing import (
     prepare_iris_binary,
     linear_kernel,
@@ -23,7 +27,7 @@ from lssvm.preprocessing import (
 )
 from config.metrics import precision, recall, f1_score, confusion_matrix
 
-solv = importlib.import_module("lssvm.solvers.qr_householder_cipher_row")
+solv = None
 
 CLASS_KERNEL_SELECTION = {0: "linear", 1: "homo_poly", 2: "homo_poly"}
 _KERNEL_REGISTRY = {
@@ -41,7 +45,10 @@ CLASS_KERNELS = {
 }
 
 
-def main(k: int = 20) -> None:
+def main(k: int = 20, solver_name: str | None = None) -> None:
+    global solv
+    solv = resolve_solver_module(solver_name or DEFAULT_SOLVER_NAME)
+
     splits = prepare_iris_binary()
     n_test = len(splits[0][1])
 
@@ -72,7 +79,9 @@ def main(k: int = 20) -> None:
         print(f"--- Class {class_idx} ({name} vs rest) ---")
         print(f"  Loading model from {model_dir}/ ...")
 
-        cc, keys, b_ct, w_ct, mode_str = solv.load_model(model_dir, d=d, n_test=n_test)
+        cc, keys, b_ct, w_ct, mode_str = solv.load_global_checkpoint(
+            model_dir, d=d, n_test=n_test
+        )
         print(f"  Model loaded  [mode={mode_str}]")
 
         scores_ct = solv.predict_cipher(cc, keys, b_ct, w_ct, X_te_feat)
@@ -106,4 +115,5 @@ if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if a.lstrip("-").isdigit()]
     if args:
         k = int(args[0])
-    main(k=k)
+    solver_name = parse_solver_name(sys.argv[1:])
+    main(k=k, solver_name=solver_name)
