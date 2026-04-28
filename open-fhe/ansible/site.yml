@@ -10,6 +10,8 @@
     venv_dir: /opt/lssvm/venv
     build_dir: /opt/build/openfhe
     openfhe_repo: https://github.com/openfheorg/openfhe-development.git
+    app_user: "{{ ansible_user_id }}"
+    app_group: "{{ ansible_user_id }}"
 
   tasks:
     - name: Wait for apt lock to clear (cloud-init may still be running)
@@ -72,8 +74,8 @@
       ansible.builtin.file:
         path: "{{ app_dir }}"
         state: directory
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
         mode: "0755"
 
     - name: Create Python venv
@@ -84,8 +86,8 @@
     - name: Chown venv to ubuntu
       ansible.builtin.file:
         path: "{{ venv_dir }}"
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
         recurse: true
 
     - name: Upgrade pip
@@ -93,34 +95,41 @@
         name: ["pip", "wheel", "setuptools"]
         state: latest
         virtualenv: "{{ venv_dir }}"
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
 
     - name: Sync LSSVM source tree
       ansible.posix.synchronize:
         src: "{{ repo_root }}/open-fhe/"
         dest: "{{ app_dir }}/"
         delete: true
+        rsync_path: "sudo rsync"
+        # Exclude large or unnecessary directories and ensure ownership on remote
         rsync_opts:
           - "--exclude=__pycache__"
           - "--exclude=*.pyc"
           - "--exclude=terraform"
           - "--exclude=ansible"
           - "--exclude=.terraform"
-      become: false
+          - "--exclude=build"
+          - "--exclude=.git"
+          - "--chown={{ app_user }}:{{ app_group }}"
+      become: true
+      tags: [sync, code]
 
     - name: Copy requirements.txt
       ansible.builtin.copy:
         src: "{{ repo_root }}/requirements.txt"
         dest: "{{ app_dir }}/requirements.txt"
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
         mode: "0644"
+      tags: [sync, code]
 
     - name: Install Python deps
       ansible.builtin.pip:
         requirements: "{{ app_dir }}/requirements.txt"
         virtualenv: "{{ venv_dir }}"
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
 
     # Real bindings live at github.com/openfheorg/openfhe-python — the PyPI
     # `openfhe` package is unrelated namesquat. Always build from source.
@@ -129,14 +138,14 @@
         name: openfhe
         state: absent
         virtualenv: "{{ venv_dir }}"
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
       failed_when: false
 
     - name: Install pybind11 (build dep for openfhe-python)
       ansible.builtin.pip:
         name: pybind11
         virtualenv: "{{ venv_dir }}"
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
 
     - name: Clone openfhe-python
       ansible.builtin.git:
@@ -149,8 +158,8 @@
     - name: Chown openfhe-python build dir
       ansible.builtin.file:
         path: /opt/build/openfhe-python
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
         recurse: true
 
     # openfhe-python is cmake-only (no setup.py/pyproject.toml) — build .so manually,
@@ -160,7 +169,7 @@
         cmd: "{{ venv_dir }}/bin/python -m pybind11 --cmakedir"
       register: pybind11_cmakedir
       changed_when: false
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
 
     - name: Configure openfhe-python build
       ansible.builtin.command:
@@ -170,13 +179,13 @@
           -Dpybind11_DIR={{ pybind11_cmakedir.stdout }}
           -DPYTHON_EXECUTABLE={{ venv_dir }}/bin/python
         creates: /opt/build/openfhe-python/build/Makefile
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
 
     - name: Compile openfhe-python
       community.general.make:
         chdir: /opt/build/openfhe-python/build
         jobs: "{{ ansible_processor_vcpus | default(2) }}"
-      become_user: ubuntu
+      become_user: "{{ app_user }}"
 
     - name: Locate built openfhe .so
       ansible.builtin.find:
@@ -200,20 +209,34 @@
         src: "{{ openfhe_so.files[0].path }}"
         dest: "{{ site_packages.stdout }}/{{ openfhe_so.files[0].path | basename }}"
         remote_src: true
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
         mode: "0644"
 
     - name: Drop run.sh helper
       ansible.builtin.copy:
         dest: "{{ app_dir }}/run.sh"
-        owner: ubuntu
-        group: ubuntu
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
         mode: "0755"
         content: |
           #!/usr/bin/env bash
+          # Usage: run.sh [script.py] [args...]
+          # Default script: lssvm_cipher.py. Threads default to nproc, override with
+          # OMP_NUM_THREADS=N ./run.sh ... or pass --threads=N to the python script.
           set -euo pipefail
           cd "{{ app_dir }}"
           source "{{ venv_dir }}/bin/activate"
           export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
-          exec python lssvm_cipher.py "$@"
+          export OMP_NUM_THREADS=${OMP_NUM_THREADS:-$(nproc)}
+          export OMP_PROC_BIND=${OMP_PROC_BIND:-spread}
+          export OMP_PLACES=${OMP_PLACES:-cores}
+          export OPENBLAS_NUM_THREADS=1
+          export MKL_NUM_THREADS=1
+          script="lssvm_cipher.py"
+          if [ $# -gt 0 ] && [[ "$1" == *.py ]]; then
+            script="$1"
+            shift
+          fi
+          exec python "$script" "$@"
+      tags: [run, code]

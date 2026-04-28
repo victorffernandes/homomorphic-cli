@@ -29,4 +29,10 @@ resource "oci_core_instance" "main" {
     ssh_authorized_keys = var.ssh_public_key
     user_data           = base64encode(file("${path.module}/../templates/cloud-init.yaml.tpl"))
   }
+  preemptible_instance_config {
+    preemption_action {
+      type = "TERMINATE"
+      preserve_boot_volume = false
+    }
+  }
 }

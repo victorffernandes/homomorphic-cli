@@ -11,9 +11,12 @@ Pipeline:
 
 from __future__ import annotations
 
+import sys
+from parallel import bootstrap as _init_parallel
+_init_parallel()
+
 import os
 import shutil
-import sys
 import time
 import importlib
 import numpy as np
@@ -36,9 +39,9 @@ from metrics import weight_relative_error
 solv = importlib.import_module("fhe_solvers.qr_householder_cipher_row")
 
 # ── configuration ──────────────────────────────────────────────────
-D_SQRT        = 8
-D_INV         = 8
-D_INV_BACKSUB = 8
+D_SQRT        = 4
+D_INV         = 4
+D_INV_BACKSUB = 4
 DEPTH_SAFETY  = 1.15
 DEPTH_OVERRIDE = None
 N_OVERRIDE    = None
@@ -298,7 +301,7 @@ def _print_comparison_table(
     print()
 
 
-def main(k: int = 3, serialize: bool = True) -> None:
+def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> None:
     splits = prepare_iris_binary()
     n_test = len(splits[0][1])  # 30
 
@@ -311,6 +314,11 @@ def main(k: int = 3, serialize: bool = True) -> None:
     max_client_n = 1
     for class_idx, (X_tr, _, y_tr, _, _) in enumerate(splits):
         parts = partition_all(X_tr, y_tr, k)
+        if n_per_class is not None:
+            parts = [
+                _subsample_for_fhe(Xc, yc, n_per_class, seed=42 + class_idx * 1000 + i)
+                for i, (Xc, yc) in enumerate(parts)
+            ]
         all_partitions[class_idx] = parts
         max_n = max(len(y_c) for _, y_c in parts) + 1
         max_client_n = max(max_client_n, max_n)
@@ -499,8 +507,12 @@ if __name__ == "__main__":
 
     k = 3
     serialize = "--no-serialize" not in args
+    n_per_class = next(
+        (int(a.split("=", 1)[1]) for a in args if a.startswith("--n-per-class=")),
+        None,
+    )
     numeric_args = [a for a in args if a.lstrip("-").isdigit()]
     if numeric_args:
         k = int(numeric_args[0])
 
-    main(k=k, serialize=serialize)
+    main(k=k, serialize=serialize, n_per_class=n_per_class)

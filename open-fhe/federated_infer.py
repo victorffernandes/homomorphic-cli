@@ -5,8 +5,11 @@ Reports per-class and OvR multiclass accuracy, precision, recall, and F1.
 
 from __future__ import annotations
 
-import importlib
 import sys
+from parallel import bootstrap as _init_parallel
+_init_parallel()
+
+import importlib
 import numpy as np
 
 from lssvm_preprocessing import (

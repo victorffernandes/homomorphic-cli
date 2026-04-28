@@ -11,6 +11,9 @@ Pipeline:
 from __future__ import annotations
 
 import sys
+from parallel import bootstrap as _init_parallel
+_init_parallel()
+
 import time
 import importlib
 import numpy as np
