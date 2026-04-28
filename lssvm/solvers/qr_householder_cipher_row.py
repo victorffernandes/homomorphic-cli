@@ -12,7 +12,7 @@ from typing import Tuple
 
 from openfhe import *
 
-from qr_householder_plain import matmul, fro_norm, sub
+from lssvm.qr_householder import matmul, fro_norm, sub
 from .utils import (
     encrypt_identity_cols,
     he_sqrt,

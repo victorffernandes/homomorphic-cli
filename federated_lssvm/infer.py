@@ -6,13 +6,14 @@ Reports per-class and OvR multiclass accuracy, precision, recall, and F1.
 from __future__ import annotations
 
 import sys
-from parallel import bootstrap as _init_parallel
+from config.parallel import bootstrap as _init_parallel
+
 _init_parallel()
 
 import importlib
 import numpy as np
 
-from lssvm_preprocessing import (
+from lssvm.preprocessing import (
     prepare_iris_binary,
     linear_kernel,
     polynomial_kernel,
@@ -20,16 +21,19 @@ from lssvm_preprocessing import (
     poly_feature_map,
     homogeneous_poly_feature_map,
 )
-from metrics import precision, recall, f1_score, confusion_matrix
+from config.metrics import precision, recall, f1_score, confusion_matrix
 
-solv = importlib.import_module("fhe_solvers.qr_householder_cipher_row")
+solv = importlib.import_module("lssvm.solvers.qr_householder_cipher_row")
 
 CLASS_KERNEL_SELECTION = {0: "linear", 1: "homo_poly", 2: "homo_poly"}
 _KERNEL_REGISTRY = {
-    "linear":    (linear_kernel,    None,                    "primal:linear"),
-    "poly":      (polynomial_kernel, poly_feature_map,       "primal:poly:degree=2:c=1.0"),
-    "homo_poly": (homogeneous_poly_kernel, homogeneous_poly_feature_map,
-                  "primal:homo_poly:degree=2"),
+    "linear": (linear_kernel, None, "primal:linear"),
+    "poly": (polynomial_kernel, poly_feature_map, "primal:poly:degree=2:c=1.0"),
+    "homo_poly": (
+        homogeneous_poly_kernel,
+        homogeneous_poly_feature_map,
+        "primal:homo_poly:degree=2",
+    ),
 }
 CLASS_KERNELS = {
     idx: (name,) + _KERNEL_REGISTRY[name]
@@ -45,10 +49,14 @@ def main(k: int = 20) -> None:
 
     from sklearn.datasets import load_iris
     from sklearn.model_selection import train_test_split as tts
+
     iris = load_iris()
     _, _, _, y_test_raw = tts(
-        iris.data, iris.target,
-        test_size=0.2, stratify=iris.target, random_state=42,
+        iris.data,
+        iris.target,
+        test_size=0.2,
+        stratify=iris.target,
+        random_state=42,
     )
 
     all_scores = []
@@ -72,10 +80,10 @@ def main(k: int = 20) -> None:
         preds = np.sign(scores)
         preds[preds == 0] = 1.0
 
-        acc  = float(np.mean(preds == y_te) * 100)
+        acc = float(np.mean(preds == y_te) * 100)
         prec = precision(preds, y_te)
-        rec  = recall(preds, y_te)
-        f1   = f1_score(preds, y_te)
+        rec = recall(preds, y_te)
+        f1 = f1_score(preds, y_te)
         tp, fp, fn, tn = confusion_matrix(preds, y_te)
 
         print(f"  Accuracy : {acc:.2f}%")

@@ -12,7 +12,7 @@ Pipeline:
 from __future__ import annotations
 
 import sys
-from parallel import bootstrap as _init_parallel
+from config.parallel import bootstrap as _init_parallel
 
 _init_parallel()
 
@@ -22,8 +22,8 @@ import importlib
 import numpy as np
 from openfhe import SerializeToFile, DeserializeCiphertext, BINARY
 
-from fhe_solvers.utils import depth_for_size
-from lssvm_preprocessing import (
+from lssvm.solvers.utils import depth_for_size
+from lssvm.preprocessing import (
     prepare_iris_binary,
     build_lssvm_matrix,
     linear_kernel,
@@ -32,11 +32,11 @@ from lssvm_preprocessing import (
     poly_feature_map,
     homogeneous_poly_feature_map,
 )
-from lssvm_plain import predict_lssvm
-from metrics import weight_relative_error
+from lssvm.plain import predict_lssvm
+from config.metrics import weight_relative_error
 
 # ── solver backend ─────────────────────────────────────────────────
-solv = importlib.import_module("fhe_solvers.qr_householder_cipher_row")
+solv = importlib.import_module("lssvm.solvers.cg_cipher")
 
 # ── configuration ──────────────────────────────────────────────────
 D_SQRT = 4
@@ -45,7 +45,7 @@ D_INV_BACKSUB = 4
 DEPTH_SAFETY = 1.15
 DEPTH_OVERRIDE = None
 N_OVERRIDE = None
-GAMMA = 1.0
+GAMMA = 1.1
 N_PER_CLASS_BASELINE = (
     2  # used only for the single-client FHE baseline (matches lssvm_cipher.py)
 )
@@ -379,7 +379,9 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
             safety_factor=DEPTH_SAFETY,
             depth_override=DEPTH_OVERRIDE,
         )
-        + 6  # fhe_aggregate EvalMult(1) + predict_cipher 2×EvalMult(2) + implicit ModDown(1) + decrypt margin(2)
+        # fhe_aggregate EvalMult(1) + predict_cipher 2×EvalMult(2)
+        # + implicit ModDown(1) + decrypt margin(2)
+        + 6
     )
     print(f"Setting up shared crypto context (depth={depth}) ...")
     t_ctx = time.perf_counter()
@@ -415,7 +417,6 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         except np.linalg.LinAlgError:
             sol_full = np.linalg.lstsq(H_full, rhs_full, rcond=None)[0]
         alpha_full = sol_full[1:]
-        w_plain_full = X_tr_feat.T @ (alpha_full * y_tr)
         preds_plain_full, _ = predict_lssvm(
             X_te_feat, X_tr_feat, alpha_full, y_tr, sol_full[0]
         )

@@ -160,7 +160,7 @@ def simulate_norms(A: list) -> list:
 
 def simulate_diag_values(A: list) -> list:
     """Plaintext QR simulation returning the diagonal values R[i][i] for scalar inverse in back-sub."""
-    from qr_householder_plain import householder_qr
+    from lssvm.qr_householder import householder_qr
 
     _, R = householder_qr(A)
     return [R[i][i] for i in range(len(R[0]))]

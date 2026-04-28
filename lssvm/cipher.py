@@ -11,15 +11,16 @@ Pipeline:
 from __future__ import annotations
 
 import sys
-from parallel import bootstrap as _init_parallel
-_init_parallel()
-
 import time
 import importlib
 import numpy as np
+from config.parallel import bootstrap as _init_parallel
 
-from fhe_solvers.utils import depth_for_size
-from lssvm_preprocessing import (
+_init_parallel()
+
+
+from lssvm.solvers.utils import depth_for_size
+from lssvm.preprocessing import (
     prepare_iris_binary,
     build_lssvm_matrix,
     linear_kernel,
@@ -28,11 +29,11 @@ from lssvm_preprocessing import (
     poly_feature_map,
     homogeneous_poly_feature_map,
 )
-from lssvm_plain import predict_lssvm
-from metrics import print_class_report
+from lssvm.plain import predict_lssvm
+from config.metrics import print_class_report
 
 solver_name = sys.argv[1] if len(sys.argv) > 1 else "qr_householder_cipher_row"
-solv = importlib.import_module(f"fhe_solvers.{solver_name}")
+solv = importlib.import_module(f"lssvm.solvers.{solver_name}")
 
 # ── configuration ──────────────────────────────────────────────────
 N_PER_CLASS = 2  # samples per binary class → H is (2*N+1) x (2*N+1)
@@ -123,7 +124,7 @@ def main():
             d = sample_X.shape[1]
         max_feat_dim = max(max_feat_dim, d)
 
-    print(f"=== LSSVM FHE Solver (Iris OvR) ===")
+    print("=== LSSVM FHE Solver (Iris OvR) ===")
     print(
         f"Gamma={GAMMA}  N_per_class={N_PER_CLASS}  H size={n_raw}x{n_raw}  depth={depth}"
     )
@@ -165,7 +166,8 @@ def main():
         H_np, rhs_np = build_lssvm_matrix(X_sub_feat, y_sub, GAMMA)
         n = H_np.shape[0]
         print(
-            f"  Built H ({H_np.shape[0]}x{H_np.shape[1]}), cond={np.linalg.cond(H_np):.1f} in {time.perf_counter() - t_mat:.3f}s"
+            f"  Built H ({H_np.shape[0]}x{H_np.shape[1]}), cond={np.linalg.cond(H_np):.1f}"
+            f"in {time.perf_counter() - t_mat:.3f}s"
         )
         H_list = H_np.tolist()
         rhs_list = rhs_np.tolist()

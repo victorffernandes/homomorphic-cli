@@ -14,13 +14,13 @@ from typing import List, Tuple
 
 from openfhe import *
 
-from qr_householder_plain import householder_qr, matmul, fro_norm, sub
- 
+from lssvm.qr_householder import householder_qr, matmul, fro_norm, sub
 
 
 # ---------------------------------------------------------------------------
 # 1. Crypto context
 # ---------------------------------------------------------------------------
+
 
 def setup_crypto_context(mult_depth: int = 8) -> Tuple:
     """Create a CKKS context with parameters suitable for Householder QR."""
@@ -45,6 +45,7 @@ def setup_crypto_context(mult_depth: int = 8) -> Tuple:
 # 2. Matrix encrypt / decrypt helpers
 # ---------------------------------------------------------------------------
 
+
 def encrypt_scalar(cc, keys, val: float):
     """Encrypt a single float into a ciphertext (slot 0)."""
     pt = cc.MakeCKKSPackedPlaintext([val])
@@ -60,19 +61,21 @@ def decrypt_scalar(cc, keys, ct) -> float:
 
 def encrypt_matrix(cc, keys, A: List[List[float]]):
     """Encrypt an m x n matrix as a 2-D list of ciphertexts (one per element)."""
-    return [[encrypt_scalar(cc, keys, A[i][j]) for j in range(len(A[0]))]
-            for i in range(len(A))]
+    return [
+        [encrypt_scalar(cc, keys, A[i][j]) for j in range(len(A[0]))]
+        for i in range(len(A))
+    ]
 
 
 def decrypt_matrix(cc, keys, C, m: int, n: int) -> List[List[float]]:
     """Decrypt a 2-D grid of ciphertexts back to a float matrix."""
-    return [[decrypt_scalar(cc, keys, C[i][j]) for j in range(n)]
-            for i in range(m)]
+    return [[decrypt_scalar(cc, keys, C[i][j]) for j in range(n)] for i in range(m)]
 
 
 # ---------------------------------------------------------------------------
 # 3. Homomorphic primitives
 # ---------------------------------------------------------------------------
+
 
 def he_dot_product(cc, v_cts, w_cts):
     """Encrypted dot product: sum(v[i] * w[i]).  Depth cost: 1."""
@@ -90,6 +93,7 @@ def he_sum_of_squares(cc, v_cts):
 # ---------------------------------------------------------------------------
 # 4. Single Householder step (hybrid)
 # ---------------------------------------------------------------------------
+
 
 def householder_step(cc, keys, R_cts, Q_cts, k: int, m: int, n: int):
     """Apply one Householder reflection at column *k* (in-place).
@@ -128,25 +132,26 @@ def householder_step(cc, keys, R_cts, Q_cts, k: int, m: int, n: int):
     # --- update R: R[k:, j] -= (2/v^Tv) * v * (v^T R[k:, j]) ---
     for j in range(k, n):
         col_j = [R_cts[i][j] for i in range(k, m)]
-        dot = he_dot_product(cc, v_cts, col_j)            # depth +1
-        scaled = cc.EvalMult(dot, two_over_vtv)            # plaintext scalar, +0
+        dot = he_dot_product(cc, v_cts, col_j)  # depth +1
+        scaled = cc.EvalMult(dot, two_over_vtv)  # plaintext scalar, +0
         for idx in range(length):
-            update = cc.EvalMult(v_cts[idx], scaled)       # depth +1
+            update = cc.EvalMult(v_cts[idx], scaled)  # depth +1
             R_cts[k + idx][j] = cc.EvalSub(R_cts[k + idx][j], update)
 
     # --- update Q: Q[row, k:] -= (2/v^Tv) * (Q[row, k:] . v) * v^T ---
     for row in range(m):
         q_slice = [Q_cts[row][k + idx] for idx in range(length)]
-        dot = he_dot_product(cc, q_slice, v_cts)           # depth +1
-        scaled = cc.EvalMult(dot, two_over_vtv)            # +0
+        dot = he_dot_product(cc, q_slice, v_cts)  # depth +1
+        scaled = cc.EvalMult(dot, two_over_vtv)  # +0
         for idx in range(length):
-            update = cc.EvalMult(v_cts[idx], scaled)       # depth +1
+            update = cc.EvalMult(v_cts[idx], scaled)  # depth +1
             Q_cts[row][k + idx] = cc.EvalSub(Q_cts[row][k + idx], update)
 
 
 # ---------------------------------------------------------------------------
 # 5. Top-level QR
 # ---------------------------------------------------------------------------
+
 
 def householder_qr_cipher(cc, keys, A: List[List[float]]):
     """Householder QR over CKKS.  Returns decrypted (Q, R)."""
@@ -168,6 +173,7 @@ def householder_qr_cipher(cc, keys, A: List[List[float]]):
 # ---------------------------------------------------------------------------
 # 6. Verification helpers
 # ---------------------------------------------------------------------------
+
 
 def transpose(a):
     m, n = len(a), len(a[0])
@@ -219,6 +225,7 @@ def verify(A, Q, R):
 # 7. Main
 # ---------------------------------------------------------------------------
 
+
 def random_matrix(m: int, n: int, seed: int = 42) -> List[List[float]]:
     """Generate a random m x n matrix with entries in [-10, 10]."""
     rng = random.Random(seed)
@@ -241,10 +248,8 @@ def main():
     print("=" * 60)
 
     tests = [
-        ("2x2",  [[3.0, 1.0], [4.0, 1.5]]),
-        ("3x3",  [[12.0, -51.0, 4.0],
-                  [6.0, 167.0, -68.0],
-                  [-4.0, 24.0, -41.0]]),
+        ("2x2", [[3.0, 1.0], [4.0, 1.5]]),
+        ("3x3", [[12.0, -51.0, 4.0], [6.0, 167.0, -68.0], [-4.0, 24.0, -41.0]]),
         ("10x10", random_matrix(10, 10, seed=42)),
         ("20x20", random_matrix(20, 20, seed=43)),
         ("30x30", random_matrix(30, 30, seed=44)),
@@ -275,7 +280,9 @@ def main():
         t0 = time.perf_counter()
         Q_enc, R_enc = householder_qr_cipher(cc, keys, A)
         total = time.perf_counter() - t0
-        print(f"Total cipher QR: {total:.3f}s  (slowdown: {total / max(plain_time, 1e-9):.1f}x)\n")
+        print(
+            f"Total cipher QR: {total:.3f}s  (slowdown: {total / max(plain_time, 1e-9):.1f}x)\n"
+        )
 
         print_matrix("Q (cipher)", Q_enc)
         print_matrix("R (cipher)", R_enc)
@@ -285,6 +292,7 @@ def main():
 
 
 # ─── Compatibility exports (used by lssvm_cipher.py) ───
+
 
 def decrypt_vector(cc, keys, ct, length: int) -> list:
     """Decrypt and extract first length values (compatible with lssvm_cipher.py)."""

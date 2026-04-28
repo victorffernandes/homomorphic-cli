@@ -30,6 +30,7 @@ from sklearn.preprocessing import StandardScaler
 
 # ── Kernel functions ──────────────────────────────────────────────
 
+
 def linear_kernel(X: np.ndarray, X2: np.ndarray = None) -> np.ndarray:
     """K[i,j] = x_i · x_j"""
     if X2 is None:
@@ -37,16 +38,18 @@ def linear_kernel(X: np.ndarray, X2: np.ndarray = None) -> np.ndarray:
     return X @ X2.T
 
 
-def polynomial_kernel(X: np.ndarray, X2: np.ndarray = None,
-                      degree: int = 2, c: float = 1.0) -> np.ndarray:
+def polynomial_kernel(
+    X: np.ndarray, X2: np.ndarray = None, degree: int = 2, c: float = 1.0
+) -> np.ndarray:
     """K[i,j] = (x_i · x_j + c)^degree"""
     if X2 is None:
         X2 = X
     return (X @ X2.T + c) ** degree
 
 
-def homogeneous_poly_kernel(X: np.ndarray, X2: np.ndarray = None,
-                             degree: int = 2) -> np.ndarray:
+def homogeneous_poly_kernel(
+    X: np.ndarray, X2: np.ndarray = None, degree: int = 2
+) -> np.ndarray:
     """K[i,j] = (x_i · x_j)^degree"""
     if X2 is None:
         X2 = X
@@ -54,6 +57,7 @@ def homogeneous_poly_kernel(X: np.ndarray, X2: np.ndarray = None,
 
 
 # ── Feature maps (explicit φ such that K(x,y) = φ(x)·φ(y)) ───────
+
 
 def poly_feature_map(X: np.ndarray, degree: int = 2, c: float = 1.0) -> np.ndarray:
     """Explicit feature map for polynomial kernel (x·y + c)^degree.
@@ -64,6 +68,7 @@ def poly_feature_map(X: np.ndarray, degree: int = 2, c: float = 1.0) -> np.ndarr
     Output shape: (N, C(d+degree, degree)).
     """
     from sklearn.preprocessing import PolynomialFeatures
+
     phi = PolynomialFeatures(degree=degree, include_bias=True).fit_transform(X)
     if c != 1.0:
         phi[:, 0] *= np.sqrt(c)  # scale bias term to match (x·y + c)^degree
@@ -76,10 +81,12 @@ def homogeneous_poly_feature_map(X: np.ndarray, degree: int = 2) -> np.ndarray:
     No bias term. Output shape: (N, C(d+degree-1, degree)).
     """
     from sklearn.preprocessing import PolynomialFeatures
+
     return PolynomialFeatures(degree=degree, include_bias=False).fit_transform(X)
 
 
 # ── Matrix assembly ───────────────────────────────────────────────
+
 
 def build_omega(K: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Omega_ij = y_i * K_ij * y_j"""
@@ -88,7 +95,9 @@ def build_omega(K: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 def build_lssvm_matrix(
-    X: np.ndarray, y: np.ndarray, gamma: float,
+    X: np.ndarray,
+    y: np.ndarray,
+    gamma: float,
     kernel=linear_kernel,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Assemble the (N+1)x(N+1) block matrix H and the rhs vector.
@@ -201,4 +210,9 @@ if __name__ == "__main__":
     splits = prepare_iris_binary()
     for X_tr, X_te, y_tr, y_te, name in splits:
         H, rhs = build_lssvm_matrix(X_tr, y_tr, gamma=1.0)
-        print(f"{name} vs rest:  H shape {H.shape},  symmetric: {np.allclose(H, H.T)},  cond: {np.linalg.cond(H):.1f}")
+        sym = np.allclose(H, H.T)
+        cond = np.linalg.cond(H)
+        print(
+            f"{name} vs rest:  H shape {H.shape},  "
+            f"symmetric: {sym},  cond: {cond:.1f}"
+        )

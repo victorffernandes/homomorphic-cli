@@ -15,9 +15,9 @@ from __future__ import annotations
 import sys
 import numpy as np
 
-from fhe_solvers import qr_householder_cipher_row as solver_mod
-from fhe_solvers.utils import decrypt_vector, sum_slots, safe_rotate
-from lssvm_preprocessing import (
+from lssvm.solvers import qr_householder_cipher_row as solver_mod
+from lssvm.solvers.utils import decrypt_vector, sum_slots
+from lssvm.preprocessing import (
     prepare_iris_binary,
     poly_feature_map,
     homogeneous_poly_feature_map,
@@ -25,9 +25,9 @@ from lssvm_preprocessing import (
 
 # ── configuration ──────────────────────────────────────────────────
 # Override with: python fhe_inference.py "5.1,3.5,1.4,0.2"
-SAMPLE      = [5.1, 3.5, 1.4, 0.2]   # [sepal_length, sepal_width, petal_length, petal_width]
-N_PER_CLASS = 2                        # must match the value used during training
-MODELS_DIR  = "models"
+SAMPLE = [5.1, 3.5, 1.4, 0.2]  # [sepal_length, sepal_width, petal_length, petal_width]
+N_PER_CLASS = 2  # must match the value used during training
+MODELS_DIR = "models"
 
 
 def _apply_feature_map(X: np.ndarray, mode_str: str) -> np.ndarray:
@@ -101,7 +101,9 @@ if __name__ == "__main__":
         try:
             SAMPLE = [float(x) for x in sys.argv[1].split(",")]
         except ValueError:
-            print(f"Invalid sample format. Expected comma-separated floats, got: {sys.argv[1]}")
+            print(
+                f"Invalid sample format. Expected comma-separated floats, got: {sys.argv[1]}"
+            )
             sys.exit(1)
 
     X_sample = np.array(SAMPLE, dtype=float).reshape(1, -1)

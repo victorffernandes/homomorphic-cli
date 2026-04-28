@@ -1,19 +1,15 @@
 #!/bin/bash
-# Script para ativar o virtual environment unificado do projeto LWE
-# Execute com: source activate_env.sh
+# Activate unified venv for lwe project
+# Run with: source activate_env.sh
 
-echo "Ativando virtual environment unificado do projeto LWE..."
 source venv/bin/activate
-echo "Virtual environment ativado!"
-echo "Python: $(which python)"
-echo "Pip: $(which pip)"
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
+echo "venv active. python: $(which python)"
 echo ""
-echo "Para executar os testes CKKS:"
-echo "  cd ckks && pytest test_main.py -v"
-echo ""
-echo "Para executar os testes TFHE:"
-echo "  cd tfhe && pytest test_main.py -v"
-echo ""
-echo "Para executar os programas principais:"
-echo "  cd ckks && python main.py"
-echo "  cd tfhe && python main.py"
+echo "Entry points:"
+echo "  python -m federated_lssvm.train       # federated training"
+echo "  python -m federated_lssvm.infer       # federated inference"
+echo "  python -m lssvm.cipher                # single-client cipher LSSVM"
+echo "  python -m lssvm.inference             # encrypted inference"
+echo "  python -m lssvm.plain                 # plaintext reference"
+echo "  bash config/run.sh [module] [args]    # threaded runner"

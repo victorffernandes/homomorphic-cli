@@ -55,7 +55,9 @@ def _rotation_indices(matrix_size, n_test=None, feature_dim=None):
     return sorted(set(pos + neg + pos_pow2 + neg_pow2 + feat_pow2))
 
 
-def setup_crypto_context(mult_depth, N=None, matrix_size=None, n_test=None, feature_dim=None):
+def setup_crypto_context(
+    mult_depth, N=None, matrix_size=None, n_test=None, feature_dim=None
+):
     if N is None:
         total_mod_bits = 60 + mult_depth * 50
         N_min = 2 * total_mod_bits
@@ -176,8 +178,9 @@ def jacobi_precondition(H, rhs, eps=1e-12):
     n = len(H)
     diag = [abs(H[i][i]) if abs(H[i][i]) > eps else 1.0 for i in range(n)]
     d_inv_sqrt = [1.0 / math.sqrt(d) for d in diag]
-    H_pre = [[H[i][j] * d_inv_sqrt[i] * d_inv_sqrt[j] for j in range(n)]
-             for i in range(n)]
+    H_pre = [
+        [H[i][j] * d_inv_sqrt[i] * d_inv_sqrt[j] for j in range(n)] for i in range(n)
+    ]
     rhs_pre = [rhs[i] * d_inv_sqrt[i] for i in range(n)]
     return H_pre, rhs_pre, d_inv_sqrt
 
@@ -234,6 +237,7 @@ def cg_solve_fhe(cc, keys, H, rhs, n_iter, D_inv=4, margin=4.0):
 
 # Env overrides
 import os
+
 N_ITER_DEFAULT = int(os.environ.get("CG_N_ITER", "6"))
 D_INV_DEFAULT = int(os.environ.get("CG_D_INV", "8"))
 PRECOND_DEFAULT = bool(int(os.environ.get("CG_PRECOND", "1")))
@@ -248,15 +252,25 @@ def _cg_with_optional_precond(cc, keys, A, b, n_iter, D_inv, margin, n):
     if PRECOND_DEFAULT:
         A_pre, b_pre, d_inv_sqrt = jacobi_precondition(A, b)
         y_ct = cg_solve_fhe(
-            cc, keys, A_pre, b_pre,
-            n_iter=n_iter, D_inv=D_inv, margin=margin,
+            cc,
+            keys,
+            A_pre,
+            b_pre,
+            n_iter=n_iter,
+            D_inv=D_inv,
+            margin=margin,
         )
         scale = list(d_inv_sqrt) + [0.0] * (slots - n)
         scale_ptxt = cc.MakeCKKSPackedPlaintext(scale)
         return cc.EvalMult(y_ct, scale_ptxt)
     return cg_solve_fhe(
-        cc, keys, A, b,
-        n_iter=n_iter, D_inv=D_inv, margin=margin,
+        cc,
+        keys,
+        A,
+        b,
+        n_iter=n_iter,
+        D_inv=D_inv,
+        margin=margin,
     )
 
 
@@ -278,8 +292,7 @@ def he_primal_weights_from_alpha(cc, alpha_ct, X_train, y_train):
     return w_ct
 
 
-def solver(cc, keys, H, rhs, X_train, y_train,
-           D_sqrt=64, D_inv=64, D_inv_backsub=64):
+def solver(cc, keys, H, rhs, X_train, y_train, D_sqrt=64, D_inv=64, D_inv_backsub=64):
     """Solve LSSVM saddle-point system via Schur reduction + CG.
 
     LSSVM H = [[0, 1ᵀ], [1, K_aug]] is symmetric INDEFINITE. CG fails directly.
@@ -303,16 +316,29 @@ def solver(cc, keys, H, rhs, X_train, y_train,
         ones = [1.0] * n_a
 
         u_ct = _cg_with_optional_precond(
-            cc, keys, K_aug, y_alpha,
-            N_ITER_DEFAULT, D_INV_DEFAULT, MARGIN_DEFAULT, n_a,
+            cc,
+            keys,
+            K_aug,
+            y_alpha,
+            N_ITER_DEFAULT,
+            D_INV_DEFAULT,
+            MARGIN_DEFAULT,
+            n_a,
         )
         v_ct = _cg_with_optional_precond(
-            cc, keys, K_aug, ones,
-            N_ITER_DEFAULT, D_INV_DEFAULT, MARGIN_DEFAULT, n_a,
+            cc,
+            keys,
+            K_aug,
+            ones,
+            N_ITER_DEFAULT,
+            D_INV_DEFAULT,
+            MARGIN_DEFAULT,
+            n_a,
         )
 
         # Plaintext sums for he_inv bounds
         import numpy as _np
+
         K_np = _np.array(K_aug)
         u_pt = _np.linalg.solve(K_np, _np.array(y_alpha))
         v_pt = _np.linalg.solve(K_np, _np.array(ones))
@@ -341,16 +367,25 @@ def solver(cc, keys, H, rhs, X_train, y_train,
 
     # Fallback: direct CG (assumes H is SPD)
     x_ct = _cg_with_optional_precond(
-        cc, keys, H, rhs,
-        N_ITER_DEFAULT, D_INV_DEFAULT, MARGIN_DEFAULT, n,
+        cc,
+        keys,
+        H,
+        rhs,
+        N_ITER_DEFAULT,
+        D_INV_DEFAULT,
+        MARGIN_DEFAULT,
+        n,
     )
     b_ct = cc.EvalMult(x_ct, e0_ptxt)
     w_ct = he_primal_weights(cc, x_ct, X_train, y_train)
     return b_ct, w_ct, n
 
 
-def serialize_model(cc, keys, b_ct, w_ct, out_dir, mode_str="primal:linear", fmt=BINARY):
+def serialize_model(
+    cc, keys, b_ct, w_ct, out_dir, mode_str="primal:linear", fmt=BINARY
+):
     import os as _os
+
     _os.makedirs(out_dir, exist_ok=True)
     assert SerializeToFile(f"{out_dir}/cryptocontext.bin", cc, fmt)
     assert SerializeToFile(f"{out_dir}/public_key.bin", keys.publicKey, fmt)
@@ -380,6 +415,7 @@ def load_model(out_dir, d, n_test=None, fmt=BINARY):
 
     class _K:
         pass
+
     keys = _K()
     keys.publicKey = pk
     keys.secretKey = sk

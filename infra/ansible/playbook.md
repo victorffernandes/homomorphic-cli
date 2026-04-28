@@ -1,7 +1,7 @@
 # LSSVM Cloud Playbook — Common Commands
 
 All commands assume:
-- `cd /home/main/Documents/Projects/lwe/open-fhe/ansible`
+- `cd /home/main/Documents/Projects/lwe/infra/ansible`
 - Inventory at `inventory.ini` (rendered by Terraform)
 - SSH key at `~/.ssh/oci-keys-rsa`
 - Repo root: `/home/main/Documents/Projects/lwe`
@@ -28,7 +28,7 @@ Builds OpenFHE C++, builds openfhe-python, syncs code, installs Python deps. ~15
 
 ## Redeploy code only (fast — seconds)
 
-Pushes `open-fhe/*.py` + `requirements.txt` updates without rebuilding OpenFHE.
+Pushes Python sources + `requirements.txt` updates without rebuilding OpenFHE.
 
 ```
 ansible-playbook -i inventory.ini site.yml --tags sync \
@@ -40,9 +40,9 @@ Or raw rsync (skips Ansible overhead entirely):
 ```
 rsync -av --delete \
   --exclude __pycache__ --exclude '*.pyc' \
-  --exclude terraform --exclude ansible \
+  --exclude infra --exclude venv --exclude .git \
   -e "ssh -i ~/.ssh/oci-keys-rsa" \
-  $REPO_ROOT/open-fhe/ \
+  $REPO_ROOT/ \
   ubuntu@$INSTANCE_IP:/opt/lssvm/app/
 ```
 
@@ -50,17 +50,20 @@ rsync -av --delete \
 
 ## Run scripts on the VM
 
-`run.sh` is a generic dispatcher. Default script `lssvm_cipher.py`; pass any `*.py` as first arg to switch.
+`run.sh` is a generic dispatcher. Default module `federated_lssvm.train`; pass any module path as first arg to switch.
 
 ```
-# Default: single-client cipher LSSVM
+# Default: federated training
 ssh -i ~/.ssh/oci-keys-rsa ubuntu@$INSTANCE_IP /opt/lssvm/app/run.sh
 
+# Single-client cipher LSSVM
+ssh -i ~/.ssh/oci-keys-rsa ubuntu@$INSTANCE_IP /opt/lssvm/app/run.sh lssvm.cipher
+
 # Federated training, k=3 clients
-ssh -i ~/.ssh/oci-keys-rsa ubuntu@$INSTANCE_IP /opt/lssvm/app/run.sh federated_lssvm.py 3
+ssh -i ~/.ssh/oci-keys-rsa ubuntu@$INSTANCE_IP /opt/lssvm/app/run.sh federated_lssvm.train 3
 
 # Federated inference, k=3
-ssh -i ~/.ssh/oci-keys-rsa ubuntu@$INSTANCE_IP /opt/lssvm/app/run.sh federated_infer.py 3
+ssh -i ~/.ssh/oci-keys-rsa ubuntu@$INSTANCE_IP /opt/lssvm/app/run.sh federated_lssvm.infer 3
 ```
 
 `run.sh` exports `OMP_NUM_THREADS=$(nproc)` by default + sets `OMP_PROC_BIND=spread` `OMP_PLACES=cores` so OpenFHE uses all cores. Pins `OPENBLAS/MKL=1` to avoid BLAS-vs-OpenMP contention.
@@ -71,13 +74,13 @@ Three knobs (highest precedence first):
 
 ```
 # 1. Python CLI flag (per-invocation, strips itself from argv)
-./run.sh federated_lssvm.py --threads=2 3
+./run.sh federated_lssvm.train --threads=2 3
 
 # 2. FHE_THREADS env (read by parallel.py)
-FHE_THREADS=2 ./run.sh federated_lssvm.py 3
+FHE_THREADS=2 ./run.sh federated_lssvm.train 3
 
 # 3. OMP_NUM_THREADS env (also honored)
-OMP_NUM_THREADS=2 ./run.sh federated_lssvm.py 3
+OMP_NUM_THREADS=2 ./run.sh federated_lssvm.train 3
 ```
 
 ### Verify cores saturate

@@ -107,7 +107,7 @@
 
     - name: Sync LSSVM source tree
       ansible.posix.synchronize:
-        src: "{{ repo_root }}/open-fhe/"
+        src: "{{ repo_root }}/"
         dest: "{{ app_dir }}/"
         delete: true
         rsync_path: "sudo rsync"
@@ -115,12 +115,12 @@
         rsync_opts:
           - "--exclude=__pycache__"
           - "--exclude=*.pyc"
-          - "--exclude=terraform"
-          - "--exclude=ansible"
+          - "--exclude=infra"
           - "--exclude=.terraform"
           - "--exclude=build"
           - "--exclude=.git"
           - "--exclude=models"
+          - "--exclude=venv"
           - "--chown={{ app_user }}:{{ app_group }}"
       become: true
       tags: [sync, code]
@@ -230,23 +230,24 @@
         mode: "0755"
         content: |
           #!/usr/bin/env bash
-          # Usage: run.sh [script.py] [-k N] [--n-per-class=N] [--no-serialize] [args...]
-          # Default script: federated_lssvm.py. Threads default to nproc, override with
-          # OMP_NUM_THREADS=N ./run.sh ... or pass --threads=N to the python script.
-          # -k N            Number of federated clients (federated_lssvm.py only).
+          # Usage: run.sh [module] [-k N] [--n-per-class=N] [--no-serialize] [args...]
+          # Default: federated_lssvm.train. Threads default to nproc, override with
+          # OMP_NUM_THREADS=N ./run.sh ... or pass --threads=N to the python module.
+          # -k N            Number of federated clients (federated_lssvm.train only).
           # K env var also works: K=5 ./run.sh
           set -euo pipefail
           cd "{{ app_dir }}"
           source "{{ venv_dir }}/bin/activate"
+          export PYTHONPATH="{{ app_dir }}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}
           export OMP_NUM_THREADS=${OMP_NUM_THREADS:-$(nproc)}
           export OMP_PROC_BIND=${OMP_PROC_BIND:-spread}
           export OMP_PLACES=${OMP_PLACES:-cores}
           export OPENBLAS_NUM_THREADS=1
           export MKL_NUM_THREADS=1
-          script="federated_lssvm.py"
-          if [ $# -gt 0 ] && [[ "$1" == *.py ]]; then
-            script="$1"
+          module="federated_lssvm.train"
+          if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+            module="$1"
             shift
           fi
           k_arg=()
@@ -264,5 +265,5 @@
                 passthrough+=("$1"); shift;;
             esac
           done
-          exec python "$script" "${k_arg[@]}" "${passthrough[@]}"
+          exec python -m "$module" "${k_arg[@]}" "${passthrough[@]}"
       tags: [run, code]

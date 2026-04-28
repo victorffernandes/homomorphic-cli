@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from lssvm_preprocessing import prepare_iris_binary, build_lssvm_matrix
+from lssvm.preprocessing import prepare_iris_binary, build_lssvm_matrix
 
 GAMMA = 1.0
 
@@ -35,9 +35,7 @@ def matmul_T_vec(Q: list, rhs: list) -> list:
     return [sum(Q[i][j] * rhs[i] for i in range(m)) for j in range(n)]
 
 
-def solve_lssvm_plain(
-    H: np.ndarray, rhs: np.ndarray
-) -> tuple[float, np.ndarray]:
+def solve_lssvm_plain(H: np.ndarray, rhs: np.ndarray) -> tuple[float, np.ndarray]:
     """Solve H @ [b; alpha] = rhs.
 
     Returns (b, alpha).  Falls back to least-squares if H is singular.
@@ -95,7 +93,7 @@ def main():
     splits = prepare_iris_binary()
     classifiers = []
 
-    print(f"=== LSSVM Plaintext Solver (Iris OvR) ===")
+    print("=== LSSVM Plaintext Solver (Iris OvR) ===")
     print(f"Gamma = {GAMMA}\n")
 
     for class_idx, (X_tr, X_te, y_tr, y_te, name) in enumerate(splits):
@@ -114,18 +112,21 @@ def main():
         print(f"  Support vectors (|alpha| > 1e-6): {n_sv}/{len(alpha)}")
         print()
 
-        classifiers.append({
-            "class_idx": class_idx,
-            "scores": scores,
-            "b": b,
-            "alpha": alpha,
-            "X_train": X_tr,
-            "y_train": y_tr,
-        })
+        classifiers.append(
+            {
+                "class_idx": class_idx,
+                "scores": scores,
+                "b": b,
+                "alpha": alpha,
+                "X_train": X_tr,
+                "y_train": y_tr,
+            }
+        )
 
     # Recover original integer test labels for multiclass eval
     from sklearn.datasets import load_iris
     from sklearn.model_selection import train_test_split
+
     iris = load_iris()
     _, _, _, y_test_raw = train_test_split(
         iris.data, iris.target, test_size=0.2, stratify=iris.target, random_state=42
