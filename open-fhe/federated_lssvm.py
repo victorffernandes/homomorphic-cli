@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import sys
 from parallel import bootstrap as _init_parallel
+
 _init_parallel()
 
 import os
-import shutil
 import time
 import importlib
 import numpy as np
@@ -39,22 +39,27 @@ from metrics import weight_relative_error
 solv = importlib.import_module("fhe_solvers.qr_householder_cipher_row")
 
 # ── configuration ──────────────────────────────────────────────────
-D_SQRT        = 4
-D_INV         = 4
+D_SQRT = 4
+D_INV = 4
 D_INV_BACKSUB = 4
-DEPTH_SAFETY  = 1.15
+DEPTH_SAFETY = 1.15
 DEPTH_OVERRIDE = None
-N_OVERRIDE    = None
-GAMMA         = 1.0
-N_PER_CLASS_BASELINE = 2  # used only for the single-client FHE baseline (matches lssvm_cipher.py)
+N_OVERRIDE = None
+GAMMA = 1.0
+N_PER_CLASS_BASELINE = (
+    2  # used only for the single-client FHE baseline (matches lssvm_cipher.py)
+)
 
 # ── kernel registry (local copy — avoids lssvm_cipher sys.argv side effect) ──
 CLASS_KERNEL_SELECTION = {0: "linear", 1: "homo_poly", 2: "homo_poly"}
 _KERNEL_REGISTRY = {
-    "linear":    (linear_kernel,    None,                    "primal:linear"),
-    "poly":      (polynomial_kernel, poly_feature_map,       "primal:poly:degree=2:c=1.0"),
-    "homo_poly": (homogeneous_poly_kernel, homogeneous_poly_feature_map,
-                  "primal:homo_poly:degree=2"),
+    "linear": (linear_kernel, None, "primal:linear"),
+    "poly": (polynomial_kernel, poly_feature_map, "primal:poly:degree=2:c=1.0"),
+    "homo_poly": (
+        homogeneous_poly_kernel,
+        homogeneous_poly_feature_map,
+        "primal:homo_poly:degree=2",
+    ),
 }
 CLASS_KERNELS = {
     idx: (name,) + _KERNEL_REGISTRY[name]
@@ -64,17 +69,21 @@ CLASS_KERNELS = {
 
 # ── per-client checkpoint helpers ──────────────────────────────────
 
+
 def _cts_exist(out_dir: str) -> bool:
-    return (os.path.exists(f"{out_dir}/bias.bin") and
-            os.path.exists(f"{out_dir}/weights.bin"))
+    return os.path.exists(f"{out_dir}/bias.bin") and os.path.exists(
+        f"{out_dir}/weights.bin"
+    )
 
 
 def _save_cts(out_dir: str, b_ct, w_ct) -> None:
     os.makedirs(out_dir, exist_ok=True)
-    assert SerializeToFile(f"{out_dir}/bias.bin", b_ct, BINARY), \
-        f"Failed to serialize bias to {out_dir}"
-    assert SerializeToFile(f"{out_dir}/weights.bin", w_ct, BINARY), \
-        f"Failed to serialize weights to {out_dir}"
+    assert SerializeToFile(
+        f"{out_dir}/bias.bin", b_ct, BINARY
+    ), f"Failed to serialize bias to {out_dir}"
+    assert SerializeToFile(
+        f"{out_dir}/weights.bin", w_ct, BINARY
+    ), f"Failed to serialize weights to {out_dir}"
 
 
 def _load_cts(out_dir: str):
@@ -104,6 +113,7 @@ def _subsample_for_fhe(
 
 
 # ── core federated functions ────────────────────────────────────────
+
 
 def partition_all(
     X: np.ndarray,
@@ -197,7 +207,7 @@ def smoke_test_fedavg() -> None:
     print("=== smoke_test_fedavg: two synthetic 7x7 LSSVM systems ===")
 
     n_per_class = 3  # 3 pos + 3 neg = 6 training samples → 7x7 H
-    n_feat = 4       # same dimensionality as Iris linear features
+    n_feat = 4  # same dimensionality as Iris linear features
 
     # Synthetic client datasets with fixed seeds for reproducibility
     rng0 = np.random.default_rng(0)
@@ -224,9 +234,15 @@ def smoke_test_fedavg() -> None:
     expected_w_avg = (w1 + w2) / 2.0  # shape: (n_feat,)
 
     # Set up 7x7 crypto context with feature_dim=n_feat for rotation keys
-    depth = depth_for_size(7, 7, D_SQRT, D_INV, D_INV_BACKSUB,
-                           safety_factor=DEPTH_SAFETY,
-                           depth_override=DEPTH_OVERRIDE)
+    depth = depth_for_size(
+        7,
+        7,
+        D_SQRT,
+        D_INV,
+        D_INV_BACKSUB,
+        safety_factor=DEPTH_SAFETY,
+        depth_override=DEPTH_OVERRIDE,
+    )
     print(f"  Context depth={depth} for 7x7 matrix ...")
     t0 = time.perf_counter()
     cc, keys = solv.setup_crypto_context(
@@ -238,16 +254,30 @@ def smoke_test_fedavg() -> None:
     print("  FHE solve client 1 ...")
     t1 = time.perf_counter()
     b_ct1, w_ct1, _ = solv.solver(
-        cc, keys, H1_np.tolist(), rhs1_np.tolist(), X_c1, y_c1,
-        D_sqrt=D_SQRT, D_inv=D_INV, D_inv_backsub=D_INV_BACKSUB,
+        cc,
+        keys,
+        H1_np.tolist(),
+        rhs1_np.tolist(),
+        X_c1,
+        y_c1,
+        D_sqrt=D_SQRT,
+        D_inv=D_INV,
+        D_inv_backsub=D_INV_BACKSUB,
     )
     print(f"  Client 1 done in {time.perf_counter() - t1:.1f}s")
 
     print("  FHE solve client 2 ...")
     t2 = time.perf_counter()
     b_ct2, w_ct2, _ = solv.solver(
-        cc, keys, H2_np.tolist(), rhs2_np.tolist(), X_c2, y_c2,
-        D_sqrt=D_SQRT, D_inv=D_INV, D_inv_backsub=D_INV_BACKSUB,
+        cc,
+        keys,
+        H2_np.tolist(),
+        rhs2_np.tolist(),
+        X_c2,
+        y_c2,
+        D_sqrt=D_SQRT,
+        D_inv=D_INV,
+        D_inv_backsub=D_INV_BACKSUB,
     )
     print(f"  Client 2 done in {time.perf_counter() - t2:.1f}s")
 
@@ -258,13 +288,17 @@ def smoke_test_fedavg() -> None:
     w_fhe_avg = np.array(solv.decrypt_vector(cc, keys, w_global, n_feat))
     b_fhe_avg = solv.decrypt_vector(cc, keys, b_global, 1)[0]
 
-    w_err = float(np.linalg.norm(w_fhe_avg - expected_w_avg) /
-                  (np.linalg.norm(expected_w_avg) + 1e-15))
+    w_err = float(
+        np.linalg.norm(w_fhe_avg - expected_w_avg)
+        / (np.linalg.norm(expected_w_avg) + 1e-15)
+    )
     # Combined [b, w] relative error avoids inflated ratios when b ≈ 0
     fhe_full = np.concatenate([[b_fhe_avg], w_fhe_avg])
     expected_full = np.concatenate([[expected_b_avg], expected_w_avg])
-    full_err = float(np.linalg.norm(fhe_full - expected_full) /
-                     (np.linalg.norm(expected_full) + 1e-15))
+    full_err = float(
+        np.linalg.norm(fhe_full - expected_full)
+        / (np.linalg.norm(expected_full) + 1e-15)
+    )
 
     print(f"  bias  (expected={expected_b_avg:.4f}, fhe={b_fhe_avg:.4f})")
     print(f"  weight relative error: {w_err:.2e}")
@@ -287,12 +321,15 @@ def _print_comparison_table(
     w_plain_fed: np.ndarray,
     k: int,
 ) -> None:
-    def acc(p): return float(np.mean(p == y_te) * 100)
+    def acc(p):
+        return float(np.mean(p == y_te) * 100)
 
     print(f"  --- Class {class_idx} ({name} vs rest) comparison (k={k}) ---")
     print(f"  {'Approach':<40} | Accuracy")
     print(f"  {'-'*40}-+---------")
-    print(f"  {'Single-client FHE (N_per_class=2, seed=42)':<40} | {acc(preds_single):.2f}%")
+    print(
+        f"  {'Single-client FHE (N_per_class=2, seed=42)':<40} | {acc(preds_single):.2f}%"
+    )
     print(f"  {f'Federated FHE  ({k} clients avg.)':<40} | {acc(preds_fed_fhe):.2f}%")
     print(f"  {'Federated plaintext reference':<40} | {acc(preds_fed_plain):.2f}%")
     print(f"  {'Full-data plaintext reference':<40} | {acc(preds_full_plain):.2f}%")
@@ -334,18 +371,29 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
     # Step 3: One shared crypto context for all clients and all classes
     depth = (
         depth_for_size(
-            max_client_n, max_client_n, D_SQRT, D_INV, D_INV_BACKSUB,
-            safety_factor=DEPTH_SAFETY, depth_override=DEPTH_OVERRIDE,
-        ) + 6  # fhe_aggregate EvalMult(1) + predict_cipher 2×EvalMult(2) + implicit ModDown(1) + decrypt margin(2)
+            max_client_n,
+            max_client_n,
+            D_SQRT,
+            D_INV,
+            D_INV_BACKSUB,
+            safety_factor=DEPTH_SAFETY,
+            depth_override=DEPTH_OVERRIDE,
+        )
+        + 6  # fhe_aggregate EvalMult(1) + predict_cipher 2×EvalMult(2) + implicit ModDown(1) + decrypt margin(2)
     )
     print(f"Setting up shared crypto context (depth={depth}) ...")
     t_ctx = time.perf_counter()
     cc, keys = solv.setup_crypto_context(
-        depth, matrix_size=max_client_n, n_test=n_test,
-        feature_dim=max_feat_dim, N=N_OVERRIDE,
+        depth,
+        matrix_size=max_client_n,
+        n_test=n_test,
+        feature_dim=max_feat_dim,
+        N=N_OVERRIDE,
     )
     slot_count = solv.get_slot_count(cc)
-    print(f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (slots={slot_count})\n")
+    print(
+        f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (slots={slot_count})\n"
+    )
 
     classifiers_fed = []
     classifiers_single = []
@@ -385,13 +433,24 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
                 b_ct_i, w_ct_i = _load_cts(ckpt_dir)
             else:
                 H_c, rhs_c = build_lssvm_matrix(X_c_feat, y_c, GAMMA)
-                print(f"  [client {client_id}] H={H_c.shape}, cond={np.linalg.cond(H_c):.1f} ...")
+                print(
+                    f"  [client {client_id}] H={H_c.shape}, cond={np.linalg.cond(H_c):.1f} ..."
+                )
                 t0 = time.perf_counter()
                 b_ct_i, w_ct_i, _ = solv.solver(
-                    cc, keys, H_c.tolist(), rhs_c.tolist(), X_c_feat, y_c,
-                    D_sqrt=D_SQRT, D_inv=D_INV, D_inv_backsub=D_INV_BACKSUB,
+                    cc,
+                    keys,
+                    H_c.tolist(),
+                    rhs_c.tolist(),
+                    X_c_feat,
+                    y_c,
+                    D_sqrt=D_SQRT,
+                    D_inv=D_INV,
+                    D_inv_backsub=D_INV_BACKSUB,
                 )
-                print(f"  [client {client_id}] FHE solve: {time.perf_counter() - t0:.1f}s")
+                print(
+                    f"  [client {client_id}] FHE solve: {time.perf_counter() - t0:.1f}s"
+                )
                 _save_cts(ckpt_dir, b_ct_i, w_ct_i)
                 print(f"  [client {client_id}] Checkpoint saved.")
             b_cts.append(b_ct_i)
@@ -403,10 +462,12 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
             _w_i = np.array(solv.decrypt_vector(cc, keys, w_ct_i, _d))
             _has_nan_b = np.isnan(_b_i)
             _has_nan_w = np.any(np.isnan(_w_i))
-            print(f"  [DEBUG client {client_id}] b={_b_i:.4f}  "
-                  f"w_norm={np.linalg.norm(_w_i):.4f}  "
-                  f"NaN: b={_has_nan_b}, w={_has_nan_w}  "
-                  f"b_ct.level={b_ct_i.GetLevel()}  w_ct.level={w_ct_i.GetLevel()}")
+            print(
+                f"  [DEBUG client {client_id}] b={_b_i:.4f}  "
+                f"w_norm={np.linalg.norm(_w_i):.4f}  "
+                f"NaN: b={_has_nan_b}, w={_has_nan_w}  "
+                f"b_ct.level={b_ct_i.GetLevel()}  w_ct.level={w_ct_i.GetLevel()}"
+            )
 
         # FHE aggregation
         print(f"  Aggregating {k} encrypted models ...")
@@ -418,9 +479,11 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         d = X_te_feat.shape[1]
         _b_g = solv.decrypt_vector(cc, keys, b_global, 1)[0]
         _w_g = np.array(solv.decrypt_vector(cc, keys, w_global, d))
-        print(f"  [DEBUG global] b={_b_g:.4f}  w_norm={np.linalg.norm(_w_g):.4f}  "
-              f"NaN: b={np.isnan(_b_g)}, w={np.any(np.isnan(_w_g))}  "
-              f"b_global.level={b_global.GetLevel()}  w_global.level={w_global.GetLevel()}")
+        print(
+            f"  [DEBUG global] b={_b_g:.4f}  w_norm={np.linalg.norm(_w_g):.4f}  "
+            f"NaN: b={np.isnan(_b_g)}, w={np.any(np.isnan(_w_g))}  "
+            f"b_global.level={b_global.GetLevel()}  w_global.level={w_global.GetLevel()}"
+        )
 
         # Encrypted inference with global model
         t_inf = time.perf_counter()
@@ -428,9 +491,11 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         print(f"  Cipher predict: {time.perf_counter() - t_inf:.4f}s")
         scores_fed = np.array(solv.decrypt_vector(cc, keys, scores_ct, n_test))
         # DEBUG: raw scores before sign()
-        print(f"  [DEBUG scores] raw={np.round(scores_fed[:6], 4)}  "
-              f"NaN={np.any(np.isnan(scores_fed))}  "
-              f"scores_ct.level={scores_ct.GetLevel()}")
+        print(
+            f"  [DEBUG scores] raw={np.round(scores_fed[:6], 4)}  "
+            f"NaN={np.any(np.isnan(scores_fed))}  "
+            f"scores_ct.level={scores_ct.GetLevel()}"
+        )
         preds_fed = np.sign(scores_fed)
         preds_fed[preds_fed == 0] = 1.0
 
@@ -438,7 +503,9 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         w_fhe_fed = np.array(solv.decrypt_vector(cc, keys, w_global, d))
 
         # Plaintext federated reference
-        preds_plain_fed, w_plain_fed, _ = plaintext_federated_reference(parts_feat, X_te_feat)
+        preds_plain_fed, w_plain_fed, _ = plaintext_federated_reference(
+            parts_feat, X_te_feat
+        )
 
         # Single-client FHE baseline (matches lssvm_cipher.py, N_PER_CLASS=2)
         X_s, y_s = _subsample_for_fhe(X_tr, y_tr, N_PER_CLASS_BASELINE, seed=42)
@@ -447,8 +514,15 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         print(f"  Single-client baseline H={H_s.shape} ...")
         t_sc = time.perf_counter()
         b_ct_s, w_ct_s, _ = solv.solver(
-            cc, keys, H_s.tolist(), rhs_s.tolist(), X_s_feat, y_s,
-            D_sqrt=D_SQRT, D_inv=D_INV, D_inv_backsub=D_INV_BACKSUB,
+            cc,
+            keys,
+            H_s.tolist(),
+            rhs_s.tolist(),
+            X_s_feat,
+            y_s,
+            D_sqrt=D_SQRT,
+            D_inv=D_INV,
+            D_inv_backsub=D_INV_BACKSUB,
         )
         print(f"  Single-client solve: {time.perf_counter() - t_sc:.1f}s")
         scores_ct_s = solv.predict_cipher(cc, keys, b_ct_s, w_ct_s, X_te_feat)
@@ -457,17 +531,25 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         preds_single[preds_single == 0] = 1.0
 
         _print_comparison_table(
-            class_idx, name, y_te,
-            preds_single, preds_fed, preds_plain_fed, preds_plain_full,
-            w_fhe_fed, w_plain_fed, k,
+            class_idx,
+            name,
+            y_te,
+            preds_single,
+            preds_fed,
+            preds_plain_fed,
+            preds_plain_full,
+            w_fhe_fed,
+            w_plain_fed,
+            k,
         )
 
         # Serialize global model
         if serialize:
             out_dir = f"models/k={k}/class_{class_idx}"
-            solv.serialize_model(cc, keys, b_global, w_global, out_dir, mode_str=mode_str)
+            solv.serialize_model(
+                cc, keys, b_global, w_global, out_dir, mode_str=mode_str
+            )
             print(f"  Global model serialized to {out_dir}/  [{mode_str}]")
-
 
         # # Delete per-client checkpoints now that aggregation succeeded
         # for client_id in range(k):
@@ -485,8 +567,11 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
 
     iris = load_iris()
     _, _, _, y_test_raw = tts(
-        iris.data, iris.target,
-        test_size=0.2, stratify=iris.target, random_state=42,
+        iris.data,
+        iris.target,
+        test_size=0.2,
+        stratify=iris.target,
+        random_state=42,
     )
 
     def _ovr_acc(classifiers):
@@ -495,8 +580,12 @@ def main(k: int = 3, serialize: bool = True, n_per_class: int | None = None) -> 
         predicted = class_indices[score_matrix.argmax(axis=1)]
         return np.mean(predicted == y_test_raw) * 100
 
-    print(f"OvR Multiclass Accuracy (Federated FHE, k={k}): {_ovr_acc(classifiers_fed):.2f}%")
-    print(f"OvR Multiclass Accuracy (Single-client FHE):      {_ovr_acc(classifiers_single):.2f}%")
+    print(
+        f"OvR Multiclass Accuracy (Federated FHE, k={k}): {_ovr_acc(classifiers_fed):.2f}%"
+    )
+    print(
+        f"OvR Multiclass Accuracy (Single-client FHE):      {_ovr_acc(classifiers_single):.2f}%"
+    )
 
 
 if __name__ == "__main__":

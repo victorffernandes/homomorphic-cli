@@ -13,7 +13,7 @@ export OMP_PROC_BIND=${OMP_PROC_BIND:-spread}
 export OMP_PLACES=${OMP_PLACES:-cores}
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
-script="lssvm_cipher.py"
+script="federated_lssvm.py"
 if [ $# -gt 0 ] && [[ "$1" == *.py ]]; then
   script="$1"
   shift

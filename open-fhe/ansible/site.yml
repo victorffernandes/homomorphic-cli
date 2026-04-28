@@ -5,13 +5,13 @@
 
   vars:
     openfhe_version: v1.5.1
-    repo_root: "{{ lookup('env', 'PWD') }}/.."
+    repo_root: "{{ playbook_dir }}/../.."
     app_dir: /opt/lssvm/app
     venv_dir: /opt/lssvm/venv
     build_dir: /opt/build/openfhe
     openfhe_repo: https://github.com/openfheorg/openfhe-development.git
-    app_user: "{{ ansible_user_id }}"
-    app_group: "{{ ansible_user_id }}"
+    app_user: "{{ ansible_user }}"
+    app_group: "{{ ansible_user }}"
 
   tasks:
     - name: Wait for apt lock to clear (cloud-init may still be running)
@@ -78,6 +78,14 @@
         group: "{{ app_group }}"
         mode: "0755"
 
+    - name: Ensure models directory exists
+      ansible.builtin.file:
+        path: "{{ app_dir }}/models"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0755"
+
     - name: Create Python venv
       ansible.builtin.command:
         cmd: python3 -m venv {{ venv_dir }}
@@ -112,6 +120,7 @@
           - "--exclude=.terraform"
           - "--exclude=build"
           - "--exclude=.git"
+          - "--exclude=models"
           - "--chown={{ app_user }}:{{ app_group }}"
       become: true
       tags: [sync, code]
@@ -221,9 +230,11 @@
         mode: "0755"
         content: |
           #!/usr/bin/env bash
-          # Usage: run.sh [script.py] [args...]
-          # Default script: lssvm_cipher.py. Threads default to nproc, override with
+          # Usage: run.sh [script.py] [-k N] [--n-per-class=N] [--no-serialize] [args...]
+          # Default script: federated_lssvm.py. Threads default to nproc, override with
           # OMP_NUM_THREADS=N ./run.sh ... or pass --threads=N to the python script.
+          # -k N            Number of federated clients (federated_lssvm.py only).
+          # K env var also works: K=5 ./run.sh
           set -euo pipefail
           cd "{{ app_dir }}"
           source "{{ venv_dir }}/bin/activate"
@@ -233,10 +244,25 @@
           export OMP_PLACES=${OMP_PLACES:-cores}
           export OPENBLAS_NUM_THREADS=1
           export MKL_NUM_THREADS=1
-          script="lssvm_cipher.py"
+          script="federated_lssvm.py"
           if [ $# -gt 0 ] && [[ "$1" == *.py ]]; then
             script="$1"
             shift
           fi
-          exec python "$script" "$@"
+          k_arg=()
+          if [ -n "${K:-}" ]; then
+            k_arg=("$K")
+          fi
+          passthrough=()
+          while [ $# -gt 0 ]; do
+            case "$1" in
+              -k)
+                k_arg=("$2"); shift 2;;
+              -k=*|--k=*)
+                k_arg=("${1#*=}"); shift;;
+              *)
+                passthrough+=("$1"); shift;;
+            esac
+          done
+          exec python "$script" "${k_arg[@]}" "${passthrough[@]}"
       tags: [run, code]
