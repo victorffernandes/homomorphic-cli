@@ -683,7 +683,7 @@ def main(
                 w_global,
                 out_dir,
                 mode_str=mode_str,
-                checkpoint_policy={"persist_public_key": False},
+                checkpoint_policy={"persist_public_key": True},
             )
             print(f"  Global model serialized to {out_dir}/  [{mode_str}]")
 
