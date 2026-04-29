@@ -66,3 +66,6 @@ datasets/
 
 # mypy
 .mypy_cache/
+
+# Playground / scratch
+playground/

@@ -16,7 +16,7 @@ SUPPORTED_SOLVER_MODULES = {
 
 UNSUPPORTED_SOLVERS = {"qr_cell", "qr_householder_cipher_cell"}
 
-DEFAULT_SOLVER_NAME = "cg"
+DEFAULT_SOLVER_NAME = "qr_row"
 SOLVER_ENV_VAR = "LSSVM_SOLVER"
 
 

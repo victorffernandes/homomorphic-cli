@@ -265,5 +265,9 @@
                 passthrough+=("$1"); shift;;
             esac
           done
-          exec python -m "$module" "${k_arg[@]}" "${passthrough[@]}"
+          PYTHON_BIN="{{ venv_dir }}/bin/python"
+          if [ ! -x "$PYTHON_BIN" ]; then
+            PYTHON_BIN="{{ venv_dir }}/bin/python3"
+          fi
+          exec "$PYTHON_BIN" -m "$module" "${k_arg[@]}" "${passthrough[@]}"
       tags: [run, code]
