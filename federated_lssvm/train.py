@@ -50,10 +50,10 @@ from config.metrics import weight_relative_error
 solv = None
 
 # ── configuration ──────────────────────────────────────────────────
-D_SQRT = 4
-D_INV = 4
-D_INV_BACKSUB = 4
-DEPTH_SAFETY = 1.15
+D_SQRT = 8
+D_INV = 8
+D_INV_BACKSUB = 8
+DEPTH_SAFETY = 1.30
 DEPTH_OVERRIDE = None
 N_OVERRIDE = None
 GAMMA = 1.1
@@ -87,8 +87,23 @@ def _class_checkpoint_marker(class_dir: str) -> str:
     return f"{class_dir}/checkpoint.json"
 
 
-def _class_context_exists(class_dir: str) -> bool:
-    return os.path.exists(_class_checkpoint_marker(class_dir))
+def _read_checkpoint_depth(class_dir: str) -> int | None:
+    marker = _class_checkpoint_marker(class_dir)
+    if not os.path.exists(marker):
+        return None
+    with open(marker, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("depth="):
+                try:
+                    return int(line.strip().split("=", 1)[1])
+                except ValueError:
+                    return None
+    return None
+
+
+def _class_context_exists(class_dir: str, required_depth: int) -> bool:
+    stored = _read_checkpoint_depth(class_dir)
+    return stored is not None and stored >= required_depth
 
 
 def _cts_exist(out_dir: str) -> bool:
@@ -107,7 +122,7 @@ def _save_cts(out_dir: str, cc, keys, b_ct, w_ct) -> None:
     ), f"Failed to serialize weights to {out_dir}"
 
 
-def _save_class_context(out_dir: str, cc, keys) -> None:
+def _save_class_context(out_dir: str, cc, keys, depth: int) -> None:
     os.makedirs(out_dir, exist_ok=True)
     assert SerializeToFile(
         f"{out_dir}/cryptocontext.bin", cc, BINARY
@@ -120,6 +135,7 @@ def _save_class_context(out_dir: str, cc, keys) -> None:
     ), f"Failed to serialize secret key to {out_dir}"
     with open(_class_checkpoint_marker(out_dir), "w", encoding="utf-8") as f:
         f.write(f"schema_version={CLASS_CHECKPOINT_SCHEMA_VERSION}\n")
+        f.write(f"depth={depth}\n")
 
 
 def _load_class_context(out_dir: str, matrix_size: int, n_test: int, feature_dim: int):
@@ -394,18 +410,44 @@ def _print_comparison_table(
     w_plain_fed: np.ndarray,
     k: int,
 ) -> None:
-    def acc(p):
+    def acc(p: np.ndarray) -> float:
         return float(np.mean(p == y_te) * 100)
 
+    def precision(p: np.ndarray) -> float:
+        # Precision for positive class (label == 1.0)
+        tp = float(np.sum((p == 1.0) & (y_te == 1.0)))
+        fp = float(np.sum((p == 1.0) & (y_te != 1.0)))
+        if tp + fp == 0:
+            return 0.0
+        return float(tp / (tp + fp) * 100)
+
+    def f1(p: np.ndarray) -> float:
+        tp = float(np.sum((p == 1.0) & (y_te == 1.0)))
+        fp = float(np.sum((p == 1.0) & (y_te != 1.0)))
+        fn = float(np.sum((p != 1.0) & (y_te == 1.0)))
+        if tp == 0:
+            return 0.0
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        if prec + rec == 0:
+            return 0.0
+        return float(2 * prec * rec / (prec + rec) * 100)
+
     print(f"  --- Class {class_idx} ({name} vs rest) comparison (k={k}) ---")
-    print(f"  {'Approach':<40} | Accuracy")
-    print(f"  {'-'*40}-+---------")
+    print(f"  {'Approach':<40} | Accuracy  | Precision | F1")
+    print(f"  {'-'*40}-+----------+-----------+------")
     print(
-        f"  {'Single-client FHE (N_per_class=2, seed=42)':<40} | {acc(preds_single):.2f}%"
+        f"  {'Single-client FHE (N_per_class=2, seed=42)':<40} | {acc(preds_single):6.2f}% | {precision(preds_single):8.2f}% | {f1(preds_single):5.2f}%"
     )
-    print(f"  {f'Federated FHE  ({k} clients avg.)':<40} | {acc(preds_fed_fhe):.2f}%")
-    print(f"  {'Federated plaintext reference':<40} | {acc(preds_fed_plain):.2f}%")
-    print(f"  {'Full-data plaintext reference':<40} | {acc(preds_full_plain):.2f}%")
+    print(
+        f"  {f'Federated FHE  ({k} clients avg.)':<40} | {acc(preds_fed_fhe):6.2f}% | {precision(preds_fed_fhe):8.2f}% | {f1(preds_fed_fhe):5.2f}%"
+    )
+    print(
+        f"  {'Federated plaintext reference':<40} | {acc(preds_fed_plain):6.2f}% | {precision(preds_fed_plain):8.2f}% | {f1(preds_fed_plain):5.2f}%"
+    )
+    print(
+        f"  {'Full-data plaintext reference':<40} | {acc(preds_full_plain):6.2f}% | {precision(preds_full_plain):8.2f}% | {f1(preds_full_plain):5.2f}%"
+    )
     w_err = weight_relative_error(w_fhe_fed, w_plain_fed)
     print(f"  FHE fed weights vs plaintext fed weights: {w_err:.4e}")
     print()
@@ -440,6 +482,8 @@ def main(
         all_partitions[class_idx] = parts
         max_n = max(len(y_c) for _, y_c in parts) + 1
         max_client_n = max(max_client_n, max_n)
+    # Single-client baseline uses N_PER_CLASS_BASELINE samples per class
+    max_client_n = max(max_client_n, N_PER_CLASS_BASELINE * 2 + 1)
     print(f"Max client H size: {max_client_n}x{max_client_n}  (k={k})\n")
 
     # Step 2: Feature dimension for rotation key generation
@@ -472,6 +516,7 @@ def main(
             if os.path.exists(f"{class_dir}/cryptocontext.bin")
             and os.path.exists(f"{class_dir}/public_key.bin")
             and os.path.exists(f"{class_dir}/secret_key.bin")
+            and _class_context_exists(class_dir, depth)
         ),
         None,
     )
@@ -497,6 +542,29 @@ def main(
         f"Context ready in {time.perf_counter() - t_ctx:.1f}s  (slots={slot_count})\n"
     )
 
+    # Extract and print crypto context parameters
+    try:
+        ring_dim = cc.GetRingDimension()
+    except Exception:
+        ring_dim = "N/A"
+    
+    # Compute modulus bit length from solver configuration
+    # First modulus: 60 bits, additional levels: 50 bits each
+    first_mod_bits = 60
+    additional_mod_bits = depth * 50
+    total_modulus_bits = first_mod_bits + additional_mod_bits
+    
+    # OpenFHE CKKS defaults from solver setup (fixed across all solvers)
+    security_level = "HEStd_NotSet"
+    scaling_factor_bits = 50  # SetScalingModSize(50) in all solvers
+    
+    print(f"Crypto Context Parameters:")
+    print(f"  Security Level: {security_level}")
+    print(f"  Ring Dimension: {ring_dim}")
+    print(f"  Modulus: {total_modulus_bits} bits (60 + {depth}×50)")
+    print(f"  Scaling Factor Bits per Level: {scaling_factor_bits}")
+    print(f"  Multiplicative Depth: {depth}\n")
+
     classifiers_fed = []
     classifiers_single = []
 
@@ -512,6 +580,7 @@ def main(
 
         # Full-data plaintext reference
         H_full, rhs_full = build_lssvm_matrix(X_tr_feat, y_tr, GAMMA)
+        print(f"  Full-data H={H_full.shape}, cond={np.linalg.cond(H_full):.2f} ...")
         try:
             sol_full = np.linalg.solve(H_full, rhs_full)
         except np.linalg.LinAlgError:
@@ -526,8 +595,8 @@ def main(
         b_cts, w_cts = [], []
         parts_feat = []
         class_dir = f"models/k={k}/class_{class_idx}"
-        if not _class_context_exists(class_dir):
-            _save_class_context(class_dir, cc, keys)
+        if not _class_context_exists(class_dir, depth):
+            _save_class_context(class_dir, cc, keys, depth)
         for client_id, (X_c, y_c) in enumerate(parts):
             X_c_feat = feature_map(X_c) if feature_map else X_c
             parts_feat.append((X_c_feat, y_c))
